@@ -169,7 +169,8 @@ def relpath_in_repo(path: str, repo: Path | str | None, cwd: str | None = None) 
         expanded = _expand_home(raw)
         if expanded is None:
             return None
-        raw = expanded
+        # `~\x` is a Windows path even when read on POSIX.
+        raw = expanded.replace("\\", "/") if raw.startswith("~\\") else expanded
     if windows:
         raw = _msys_to_windows(raw)
         repo_s = _msys_to_windows(repo_s.replace("\\", "/"))

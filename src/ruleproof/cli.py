@@ -596,23 +596,24 @@ def use_color(stream: TextIO, *, no_color: bool = False) -> bool:
 
 def _enable_windows_vt() -> bool:
     """Turn on ANSI escape processing in the Windows console; True if colors will work."""
-    if sys.platform != "win32":
+    if sys.platform != "win32":  # a platform check, so mypy checks each branch on its own OS
         return True
-    try:
-        import ctypes
-        from ctypes import wintypes
+    else:
+        try:
+            import ctypes
+            from ctypes import wintypes
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-        mode = wintypes.DWORD()
-        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = wintypes.DWORD()
+            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                return False
+            enable_vt = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            return bool(mode.value & enable_vt) or bool(
+                kernel32.SetConsoleMode(handle, mode.value | enable_vt)
+            )
+        except (OSError, AttributeError):
             return False
-        enable_vt = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-        return bool(mode.value & enable_vt) or bool(
-            kernel32.SetConsoleMode(handle, mode.value | enable_vt)
-        )
-    except (OSError, AttributeError):
-        return False
 
 
 def _format_table(rows: Sequence[Sequence[str]]) -> str:

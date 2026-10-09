@@ -363,7 +363,7 @@ def test_ascii_fallback_when_stdout_cannot_encode(
     stream = Console(buf, encoding="ascii")
     monkeypatch.setattr("sys.stdout", stream)
     fk.results = [result("a", "fail"), result("b", "pass")]
-    assert cli.main(["check"]) == 1
+    assert cli.main(["check", "--no-color"]) == 1
     stream.flush()
     out = buf.getvalue().decode("ascii")
     assert "x a  s" in out and "+ b  s" in out

@@ -78,6 +78,7 @@ def worktree(tmp_path_factory: pytest.TempPathFactory, isolated_git: Path) -> Pa
         fh.write("appended\n")
     (repo / "blob.bin").write_bytes(b"\x00\x09\x09")
     git(repo, "update-index", "--chmod=+x", "script.sh")  # mode-only change
+    (repo / "script.sh").chmod(0o755)  # where core.fileMode is on, the work tree decides
     (repo / "crlf.txt").write_bytes(b"x\r\ny\r\n")
     (repo / "noeol.txt").write_bytes(b"first\nlast\nmore")
     (repo / "staged.py").write_text("print('staged')\n", encoding="utf-8")
