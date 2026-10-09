@@ -94,6 +94,18 @@ def session(*events: Event) -> Session:
         ("I've committed the changes.", ["commit"]),
         ("Created a commit with the fix.", ["commit"]),
         ("Pushed to origin/main.", ["push"]),
+        ("I ran the tests and they pass.", ["tests"]),
+        ("I ran the tests and they all passed.", ["tests"]),
+        ("Verified: tests pass, lint clean, types check.", ["tests", "lint", "types"]),
+        ("Tests pass, but lint has 3 errors.", ["tests"]),
+        ("Tests pass although I couldn't run lint.", ["tests"]),
+        ("It compiles, but tests were not run.", ["build"]),
+        ("Lint \u2717 (3 errors), tests \u2713", ["tests"]),
+        ("- [x] tests\n- [ ] lint", ["tests"]),
+        ("42 passed, 0 failed.", ["tests"]),
+        ("41 passed, 1 skipped", ["tests"]),
+        ("No new lint warnings were introduced.", ["lint"]),
+        ("Changes have been committed and pushed to origin.", ["commit", "push"]),
         ("The branch has been pushed.", ["push"]),
         (
             "**Summary**\n- All tests pass\n- ruff is clean\n- No type errors\n"
@@ -135,6 +147,34 @@ def test_claim_phrases(text: str, claims: list[str]) -> None:
         "Next step: push to origin.",
         "Let me run the tests to confirm they pass.",
         "You can run ruff to make sure lint is clean.",
+        # misfires from review
+        "Refactor done: I pushed the validation logic down to the parser.",
+        "I pushed back on the design in the comment.",
+        "We pushed the limit to 100.",
+        "Messages are pushed to the remote queue.",
+        "I've pushed back the deadline.",
+        "I committed to keeping the old API working.",
+        "The new test passes an empty list and asserts ValueError.",
+        "The test passes None to the parser.",
+        "Note: the build passes the flag to the linter.",
+        "Types are cleanly separated now.",
+        "Tests are ok to skip here.",
+        "PR description:\n\n- [ ] Tests pass\n- [ ] Lint is clean",
+        # honest partial reports
+        "Before my change, all tests passed; now 2 fail in test_api.py.",
+        "40 tests pass and 2 fail; see below.",
+        "Most tests pass, but test_api has 2 failures.",
+        "41 passed, 1 error (an unrelated import problem).",
+        "I ran pytest: 1 failed, 41 passed.",
+        "All tests pass except one flaky test.",
+        "Only 3 tests pass.",
+        "Previously the tests passed, but now 3 fail.",
+        "I believe the tests pass.",
+        "The user said the tests pass.",
+        "Goal: all tests pass.",
+        "Tests pass on main; untested here.",
+        "Tests pass (I ran them before the last edit, not after).",
+        "The tests fail.",
     ],
 )
 def test_no_claim_in_hedged_or_negated_text(text: str) -> None:
@@ -318,15 +358,78 @@ def test_multiple_claims_summary_lists_failing_ones() -> None:
     assert len(r.evidence) == 6
 
 
-def test_claims_param_selects_and_validates() -> None:
+def test_claims_param_selects_and_declares_choices() -> None:
     s = session(edit("a.py"), say("All tests pass. I've pushed to origin."))
     r = run(s, claims=["push"])
     assert r.summary == "claimed changes were pushed; no git push ran after edit #0"
-    r = run(s, claims=["tests", "vibes"])
-    assert r.status == "skip"
-    assert "vibes" in r.summary
+    assert load_all()["claims"].params["claims"].choices == tuple(CLAIMS)
 
 
 def test_quoted_evidence_does_not_count() -> None:
     s = session(edit("a.py"), cmd('echo "pytest: 3 passed"'), say("pytest: 3 passed."))
     assert run(s).status == "fail"
+
+
+# --- regressions from review ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat pytest.ini",
+        "grep -n pytest pyproject.toml",
+        "uv add --dev pytest",
+        "pip show pytest",
+        "uv run pytest --collect-only -q",
+        "uv run pytest --version",
+        "echo done > /tmp/pytest.log",
+    ],
+)
+def test_lookalike_commands_are_not_evidence(command: str) -> None:
+    s = session(
+        edit("src/a.py"),
+        cmd("uv run pytest", 1, "1 failed, 3 passed in 0.2s"),
+        cmd(command),
+        say("All tests pass."),
+    )
+    r = run(s)
+    assert (r.status, r.summary) == ("fail", 'claimed tests pass; "uv run pytest" failed (exit 1)')
+
+
+@pytest.mark.parametrize(
+    ("claim", "failing", "lookalike"),
+    [
+        ("Ruff is clean.", "uv run ruff check .", "cat ruff.toml"),
+        ("mypy passes.", "uv run mypy src", "cat mypy.ini"),
+        ("The build succeeds.", "npm run build", "ls dist/"),
+        ("I committed the changes.", "git commit -m wip", "git log --oneline -1"),
+    ],
+)
+def test_lookalikes_for_other_claims(claim: str, failing: str, lookalike: str) -> None:
+    s = session(edit("src/a.py"), cmd(failing, 1), cmd(lookalike), say(claim))
+    assert run(s).status == "fail"
+
+
+def test_exit_zero_with_failing_output_contradicts_claim() -> None:
+    out = "FAILED tests/test_a.py::test_x\n1 failed, 41 passed in 0.5s"
+    s = session(
+        edit("src/a.py"), cmd("uv run pytest -q 2>&1 | tail -5", 0, out), say("Tests pass.")
+    )
+    assert run(s).summary == (
+        'claimed tests pass; "uv run pytest -q 2>&1 | tail -5" failed '
+        "(exit 0 but output shows failures)"
+    )
+
+
+def test_denied_command_is_not_evidence() -> None:
+    denied = cmd("uv run pytest", None, "The tool use was rejected.")
+    denied.is_error = True
+    s = session(edit("src/a.py"), denied, say("All tests pass."))
+    assert run(s).summary == "claimed tests pass; no test command ran after edit #0"
+
+
+def test_shell_write_after_tests_resets_evidence() -> None:
+    s = session(edit("src/a.py"), cmd("pytest"), cmd("sed -i s/x/y/ src/a.py"), say("Tests pass."))
+    assert run(s).status == "fail"
+    s = session(edit("src/a.py"), cmd("pytest"), cmd("echo x >> NOTES.md"), say("Tests pass."))
+    assert run(s).status == "pass"

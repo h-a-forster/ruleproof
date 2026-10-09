@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,14 @@ def fc(
 
 def diff(*files: FileChange) -> Diff:
     return Diff("HEAD", list(files))
+
+
+def edits_in(repo: Path, *items: tuple[str, EditAction | None]) -> Session:
+    events = [
+        Event(i, EventKind.EDIT, path=str(repo / p), action=a, tool="Write")
+        for i, (p, a) in enumerate(items)
+    ]
+    return Session("generic", "s", "t.jsonl", cwd=str(repo), events=events)
 
 
 def edits(*items: tuple[str, EditAction | None]) -> Session:
@@ -148,22 +157,36 @@ def test_forbid_change_ignores_edits_outside_repo() -> None:
 
 
 @pytest.mark.parametrize(
-    ("diff_status", "actions", "status"),
+    ("diff_status", "exists", "actions", "status"),
     [
-        (None, ["modify"], "fail"),  # not in the diff: unknown counts as modify
-        (None, ["add", "delete"], "pass"),
-        ("added", ["modify"], "pass"),  # the diff says it is new: unknown counts as add
-        ("deleted", ["modify"], "pass"),
-        ("modified", ["modify"], "fail"),
+        (None, True, ["modify"], "fail"),  # not in the diff, still there: modify
+        (None, True, ["add", "delete"], "pass"),
+        (None, False, ["add"], "fail"),  # not in the diff and gone: created, then removed
+        (None, False, ["modify"], "pass"),
+        ("added", True, ["modify"], "pass"),  # the diff says it is new: add
+        ("deleted", False, ["modify"], "pass"),
+        ("modified", True, ["modify"], "fail"),
     ],
 )
 def test_forbid_change_unknown_edit_action(
-    diff_status: ChangeStatus | None, actions: list[str], status: str
+    tmp_path: Path,
+    diff_status: ChangeStatus | None,
+    exists: bool,
+    actions: list[str],
+    status: str,
 ) -> None:
-    s = edits(("C:/work/repo/x.lock", "unknown"))
+    if exists:
+        (tmp_path / "x.lock").write_text("x", encoding="utf-8")
+    s = edits_in(tmp_path, ("x.lock", "unknown"))
     d = diff(fc("x.lock", diff_status)) if diff_status else diff()
     rule = make_rule("forbid-change", paths=["*.lock"], actions=actions)
-    assert run(rule, Context(REPO, d, s)).status == status
+    assert run(rule, Context(tmp_path, d, s)).status == status
+
+
+def test_forbid_change_unknown_action_without_repo_counts_as_modify() -> None:
+    s = edits(("C:/work/repo/x.lock", "unknown"))
+    rule = make_rule("forbid-change", paths=["*.lock"], actions=["modify"])
+    assert run(rule, Context(None, None, s)).status == "fail"
 
 
 @pytest.mark.parametrize(
@@ -204,10 +227,19 @@ def test_forbid_change_scoped_rule() -> None:
     assert [e.path for e in run(rule, Context(REPO, diff(*files))).evidence] == ["pkg/gen/a.py"]
 
 
-def test_forbid_change_rejects_unknown_action() -> None:
-    r = run(make_rule("forbid-change", paths=["x"], actions=["rename"]), Context(REPO, diff()))
-    assert r.status == "skip"
-    assert "rename" in r.summary
+def test_param_constraints_are_declared() -> None:
+    specs = load_all()
+    assert specs["forbid-change"].params["actions"].choices == ("add", "modify", "delete")
+    for check, name in [
+        ("forbid-change", "paths"),
+        ("require-change", "if_changed"),
+        ("require-change", "then_changed"),
+        ("require-command", "when_paths"),
+        ("forbid-edit", "paths"),
+    ]:
+        assert specs[check].params[name].nonempty, (check, name)
+    assert specs["max-diff"].one_of == ("max_files", "max_lines")
+    assert specs["forbid-edit"].one_of == ("paths", "outside_repo")
 
 
 def test_forbid_change_runs_with_either_input_via_engine() -> None:
@@ -379,3 +411,70 @@ def test_max_diff_without_limits_is_skipped() -> None:
 def test_max_diff_scope() -> None:
     d = diff(fc("pkg/a.py", added=["x"]), fc("b.py", added=["x"] * 100))
     assert run(make_rule("max-diff", scope="pkg", max_lines=1), Context(REPO, d)).status == "pass"
+
+
+# --- regressions from review ------------------------------------------------------------
+
+
+def test_forbid_change_failed_edit_does_not_count() -> None:
+    s = edits(("C:/work/repo/migrations/001.py", "modify"))
+    s.events[0].is_error = True  # "String to replace not found" / blocked by a hook
+    rule = make_rule("forbid-change", paths=["migrations/**"])
+    assert run(rule, Context(REPO, diff(), s)).status == "pass"
+
+
+def test_forbid_change_skips_gitignored_transcript_edits(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text(".env\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("X=1\n", encoding="utf-8")
+    s = edits_in(tmp_path, (".env", "add"))
+    rule = make_rule("forbid-change", paths=[".env"], actions=["add"])
+    assert run(rule, Context(tmp_path, diff(), s)).status == "pass"
+    rule = make_rule("forbid-change", paths=[".env"], actions=["add"], include_ignored=True)
+    assert run(rule, Context(tmp_path, diff(), s)).status == "fail"
+
+
+def test_forbid_change_windows_paths_compared_case_insensitively() -> None:
+    s = edits((r"C:\WORK\Repo\Tests\Test_New.py", "modify"))
+    d = diff(fc("Tests/Test_New.py", "added"))
+    rule = make_rule("forbid-change", paths=["Tests/**", "tests/**"], actions=["modify"])
+    assert run(rule, Context(REPO, d, s)).status == "pass"  # the diff says added
+
+
+@pytest.mark.parametrize(
+    ("path", "lines", "flagged"),
+    [
+        ("ruleproof.toml", ['pattern = "TODO"'], []),
+        (".ruleproof.toml", ['pattern = "TODO"'], []),
+        ("AGENTS.md", ["- No TODOs.", '  <!-- ruleproof: forbid-text pattern="TODO" -->'], [1]),
+        (
+            "AGENTS.md",
+            ["<!-- ruleproof: forbid-text", '     pattern="TODO" -->', "TODO: later"],
+            [3],
+        ),
+        (
+            "pyproject.toml",
+            ["[tool.ruleproof]", 'pattern = "TODO"', "[project]", 'name = "TODO"'],
+            [4],
+        ),
+        ("src/a.py", ["# TODO"], [1]),
+    ],
+)
+def test_forbid_text_skips_rule_definitions(
+    path: str, lines: list[str], flagged: list[int]
+) -> None:
+    r = run(make_rule("forbid-text", pattern="TODO"), Context(REPO, diff(fc(path, added=lines))))
+    assert [e.line for e in r.evidence] == flagged
+
+
+def test_forbid_text_redact_and_token_masking() -> None:
+    line = 'API_KEY = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"'
+    d = diff(fc("a.py", added=[line]))
+    r = run(make_rule("forbid-text", pattern="ghp_[A-Za-z0-9]+"), Context(REPO, d))
+    assert r.evidence[0].excerpt == 'API_KEY = "ghp_<redacted:36 chars>"'
+    r = run(make_rule("forbid-text", pattern="ghp_[A-Za-z0-9]+", redact=True), Context(REPO, d))
+    assert r.evidence[0].excerpt == 'API_KEY = "<redacted:40 chars>"'
+    d = diff(fc("a.py", added=['password = "hunter2hunter2"']))
+    r = run(make_rule("forbid-text", pattern="hunter2+", redact=True), Context(REPO, d))
+    excerpt = r.evidence[0].excerpt
+    assert excerpt is not None and "hunter" not in excerpt

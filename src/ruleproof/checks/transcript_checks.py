@@ -9,13 +9,18 @@ from ruleproof.checks._common import (
     clip,
     command_matches,
     command_outcome,
+    commands_run,
     compile_regex,
     counted_edits,
     edit_relpath,
+    edits_made,
     globs_match,
+    is_powershell,
+    path_key,
     plural,
     preview,
     quoted,
+    ran_after,
 )
 from ruleproof.models import Context, Event, EventKind, Evidence, Rule, RuleResult
 
@@ -43,17 +48,19 @@ def _actor(ev: Event) -> str:
         "default the text of quoted strings containing spaces, heredoc bodies and PowerShell "
         'here-strings is ignored, so `git commit -m "never git push"` does not match '
         "`git\\s+push`, while scripts passed to `bash -c`, `pwsh -Command` or `cmd /c` are "
-        "matched as commands. Set `match_quoted = true` to match the raw command line."
+        'matched as commands; so are `eval`, `ssh host "..."`, `echo ... | sh` and the code '
+        "of `python -c`. Comments are ignored. Set `match_quoted = true` to match the raw "
+        "command line. Commands that never ran (denied at the permission prompt or blocked by "
+        "a hook) do not count; a command that ran and failed does."
     ),
 )
 def forbid_command(rule: Rule, ctx: Context) -> RuleResult:
-    assert ctx.session is not None
     pattern: str = rule.params["command"]
     rx = compile_regex(pattern, rule.params["ignore_case"])
     hits = [
         ev
-        for ev in ctx.session.commands()
-        if command_matches(rx, ev.text, rule.params["match_quoted"])
+        for ev in commands_run(ctx)
+        if command_matches(rx, ev.text, rule.params["match_quoted"], is_powershell(ev))
     ]
     if not hits:
         return RuleResult(rule, "pass", f"no command matches {quoted(pattern)}")
@@ -75,23 +82,31 @@ def forbid_command(rule: Rule, ctx: Context) -> RuleResult:
         "command": Param("regex", required=True, doc="the command that must run"),
         "must_succeed": Param("bool", default=True, doc="the last run must succeed"),
         "after_last_edit": Param("bool", default=True, doc="it must run after the last edit"),
-        "when_paths": Param("glob_list", doc="only required when a matching file changed"),
-        "edit_paths": Param("glob_list", doc="edits that count as the last edit (default: all)"),
+        "when_paths": Param(
+            "glob_list", nonempty=True, doc="only required when a matching file changed"
+        ),
+        "edit_paths": Param(
+            "glob_list", nonempty=True, doc="edits that count as the last edit (default: all)"
+        ),
         "ignore_edit_paths": Param("glob_list", default=[], doc="edits that never count"),
         "match_quoted": _MATCH_QUOTED,
     },
     doc=(
         "Fails when no command matching `command` ran after the agent's last counted edit, or "
-        "when the last such run failed. Edits outside the repo never count; `edit_paths` and "
-        "`ignore_edit_paths` narrow the rest. The verdict comes from the last matching run: "
-        "exit 0 passes, a non-zero exit or a runtime error fails, and an unknown exit code is "
-        "judged from the output (pytest, jest, cargo, ... summaries) or reported as "
-        "`unverified`. With `when_paths` the command is only required when a changed or "
-        "edited file matches; a scoped rule is only required when a file in its scope changed."
+        "when the last such run failed. `command` is searched anywhere in the command line "
+        "(quoted prose and comments excluded, as in forbid-command), so anchor it if needed. "
+        "Edits are file-tool edits that took effect inside the repo plus shell commands that "
+        "obviously write files (redirects, `tee`, `sed -i`, `git apply`, `--fix`, "
+        "formatters); `edit_paths` and `ignore_edit_paths` narrow them. The verdict comes "
+        "from the last matching run that was not denied or blocked: exit 0 passes unless the "
+        "output shows failures (`pytest | tail`), a non-zero exit or a runtime error fails, "
+        "and an unknown exit code is judged from the output (pytest, jest, cargo, ... "
+        "summaries) or reported as `unverified`. Not required when nothing was edited and "
+        "the diff has no changes in scope; with `when_paths`, only when a changed or edited "
+        "file matches; for a scoped rule, only when a file in its scope changed."
     ),
 )
 def require_command(rule: Rule, ctx: Context) -> RuleResult:
-    assert ctx.session is not None
     pattern: str = rule.params["command"]
     rx = compile_regex(pattern)
     when: list[str] | None = rule.params["when_paths"]
@@ -104,8 +119,8 @@ def require_command(rule: Rule, ctx: Context) -> RuleResult:
 
     runs = [
         ev
-        for ev in ctx.session.commands()
-        if command_matches(rx, ev.text, rule.params["match_quoted"])
+        for ev in commands_run(ctx)
+        if command_matches(rx, ev.text, rule.params["match_quoted"], is_powershell(ev))
     ]
     last_edit: Event | None = None
     last_rel: str | None = None
@@ -115,7 +130,9 @@ def require_command(rule: Rule, ctx: Context) -> RuleResult:
         )
         if edits:
             last_edit, last_rel = edits[-1]
-    window = [ev for ev in runs if last_edit is None or ev.index > last_edit.index]
+        elif not _diff_in_scope(ctx, rule.scope):
+            return RuleResult(rule, "pass", "not required: no edits")
+    window = [ev for ev in runs if last_edit is None or ran_after(ev, last_edit)]
     where = f" after the last edit (#{last_edit.index})" if last_edit else ""
 
     if not window:
@@ -147,27 +164,33 @@ def require_command(rule: Rule, ctx: Context) -> RuleResult:
     return RuleResult(rule, outcome, f"{ran} ({reason})", evidence)
 
 
+def _diff_in_scope(ctx: Context, scope: str | None) -> bool:
+    if ctx.diff is None:
+        return False
+    return any(paths.in_scope(f.path, scope) for f in ctx.diff.files)
+
+
 def _touched(ctx: Context, scope: str | None) -> list[str]:
     """Changed (diff) and agent-edited in-repo paths inside ``scope``."""
-    found: dict[str, None] = {}
+    key = path_key(ctx)
+    found: dict[str, str] = {}
     if ctx.diff is not None:
         for f in ctx.diff.files:
             for p in (f.path, f.old_path):
                 if p:
-                    found[p] = None
-    if ctx.session is not None:
-        for ev in ctx.session.edits():
-            rel = edit_relpath(ev, ctx)
-            if rel is not None:
-                found[rel] = None
-    return [p for p in found if paths.in_scope(p, scope)]
+                    found.setdefault(key(p), p)
+    for ev in edits_made(ctx):
+        rel = edit_relpath(ev, ctx)
+        if rel is not None:
+            found.setdefault(key(rel), rel)
+    return [p for p in found.values() if paths.in_scope(p, scope)]
 
 
 @register(
     "forbid-edit",
     needs={"session"},
     params={
-        "paths": Param("glob_list", doc="repo files the agent must not edit"),
+        "paths": Param("glob_list", nonempty=True, doc="repo files the agent must not edit"),
         "outside_repo": Param(
             "bool", default=False, doc="forbid editing any file outside the repo"
         ),
@@ -175,19 +198,20 @@ def _touched(ctx: Context, scope: str | None) -> list[str]:
     doc=(
         "Fails when the agent's file tools touched a path matching `paths`, or with "
         "`outside_repo = true` any path outside the repo, even if the change was later "
-        "reverted and never reaches the diff. Paths outside the repo are reported as recorded "
-        "in the transcript. Shell commands that write files are not seen; pair with "
-        "forbid-change for those. Set `paths`, `outside_repo` or both."
+        "reverted and never reaches the diff. Failed or blocked edits changed nothing and do "
+        "not count. Paths outside the repo are reported as recorded in the transcript. Shell "
+        "commands that write files are not seen; pair with forbid-change for those. Set "
+        "`paths`, `outside_repo` or both."
     ),
+    one_of=("paths", "outside_repo"),
 )
 def forbid_edit(rule: Rule, ctx: Context) -> RuleResult:
-    assert ctx.session is not None
     globs: list[str] | None = rule.params["paths"]
     outside: bool = rule.params["outside_repo"]
     if not globs and not outside:
         return RuleResult(rule, "skip", "nothing to check: set paths or outside_repo")
     found: dict[str, Evidence] = {}
-    for ev in ctx.session.edits():
+    for ev in edits_made(ctx):
         if not ev.path:
             continue
         rel = edit_relpath(ev, ctx)
@@ -224,7 +248,8 @@ _TOOL_KINDS = (EventKind.TOOL, EventKind.COMMAND, EventKind.EDIT)
     doc=(
         "Fails when the agent or a subagent called a tool whose name matches `tool` (searched "
         "case-sensitively in the agent's own tool name: `WebFetch`, `mcp__github__.*`, "
-        "`apply_patch`, ...). Shell and file-edit tools count as well as other tools."
+        "`apply_patch`, ...). Shell and file-edit tools count as well as other tools, and so "
+        "does a call that was denied or failed: the agent still tried."
     ),
 )
 def forbid_tool(rule: Rule, ctx: Context) -> RuleResult:

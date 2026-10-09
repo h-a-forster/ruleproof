@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from ruleproof import paths
 from ruleproof.checks import Param, register
 from ruleproof.checks._common import (
@@ -9,12 +11,15 @@ from ruleproof.checks._common import (
     clip,
     compile_regex,
     edit_relpath,
+    edits_made,
     globs_match,
+    path_key,
     plural,
     preview,
     quoted,
 )
-from ruleproof.models import Context, Diff, Evidence, FileChange, Rule, RuleResult
+from ruleproof.instructions import git_ignored
+from ruleproof.models import Context, Diff, Event, Evidence, FileChange, Rule, RuleResult
 
 _ACTIONS = ("add", "modify", "delete")
 _PAST = {"add": "added", "modify": "modified", "delete": "deleted"}
@@ -48,10 +53,18 @@ def _selected(rule: Rule, path: str, include: list[str] | None, exclude: list[st
     needs={"diff", "session"},
     needs_any=True,
     params={
-        "paths": Param("glob_list", required=True, doc="files that must not change"),
+        "paths": Param("glob_list", required=True, nonempty=True, doc="files that must not change"),
         "except": Param("glob_list", default=[], doc="files exempt from `paths`"),
         "actions": Param(
-            "str_list", default=list(_ACTIONS), doc="which changes count: add, modify, delete"
+            "str_list",
+            default=list(_ACTIONS),
+            choices=_ACTIONS,
+            doc="which changes count: add, modify, delete",
+        ),
+        "include_ignored": Param(
+            "bool",
+            default=False,
+            doc="also count agent edits to gitignored files (never in the diff)",
         ),
     },
     doc=(
@@ -59,16 +72,16 @@ def _selected(rule: Rule, path: str, include: list[str] | None, exclude: list[st
         "diff or to the agent's own edits in the transcript (so a file created and removed "
         "again is still caught). A rename counts as deleting the old path and adding the new "
         "one. When the diff lists a path, the diff decides the action (every edit of a file "
-        "that is new since the base is an add); the transcript's action is used only for paths "
-        "the diff does not list, with an unknown action counting as `modify`. Edits outside "
-        "the repo are ignored; use forbid-edit for those. One finding per path."
+        "that is new since the base is an add; paths are compared case-insensitively for a "
+        "repo on a Windows drive). For paths the diff does not list, the transcript's action "
+        "is used; an unknown action (Gemini's write_file) counts as `add` when the file no "
+        "longer exists (created, then removed) and as `modify` otherwise. Failed or blocked "
+        "edits, edits outside the repo and, unless `include_ignored = true`, edits to "
+        "gitignored files do not count. One finding per path."
     ),
 )
 def forbid_change(rule: Rule, ctx: Context) -> RuleResult:
     actions = set(rule.params["actions"])
-    unknown = sorted(actions - set(_ACTIONS))
-    if unknown:
-        return RuleResult(rule, "skip", f"unknown action(s): {', '.join(unknown)}")
     include: list[str] = rule.params["paths"]
     exclude: list[str] = rule.params["except"]
     diff_actions = _diff_actions(ctx.diff) if ctx.diff is not None else {}
@@ -77,18 +90,31 @@ def forbid_change(rule: Rule, ctx: Context) -> RuleResult:
     for path, action in diff_actions.items():
         if action in actions and _selected(rule, path, include, exclude):
             found[path] = Evidence(f"{_PAST[action]} {path}", path=path)
+
+    # Paths in the diff were judged above from their base state: a re-write of a file the
+    # diff shows as new is still an add, a Write over an existing file a modify.
+    key = path_key(ctx)
+    in_diff = {key(p) for p in diff_actions}
+    transcript: dict[str, list[Event]] = {}
     if ctx.session is not None:
-        for ev in ctx.session.edits():
+        for ev in edits_made(ctx):
             rel = edit_relpath(ev, ctx)
-            # A path in the diff was judged above from its base state: a re-write of a file
-            # the diff shows as new is still an add, a Write over an existing file a modify.
-            if rel is None or rel in diff_actions or not _selected(rule, rel, include, exclude):
+            if rel is None or key(rel) in in_diff or not _selected(rule, rel, include, exclude):
                 continue
-            done = ev.action if ev.action and ev.action != "unknown" else "modify"
-            if rel not in found and done in actions:
+            transcript.setdefault(rel, []).append(ev)
+    ignored: set[str] = set()
+    if transcript and ctx.repo is not None and not rule.params["include_ignored"]:
+        ignored = git_ignored(ctx.repo, list(transcript))
+    for rel, events in transcript.items():
+        if rel in ignored:
+            continue
+        for ev in events:
+            done = _transcript_action(ev, rel, ctx)
+            if done in actions:
                 found[rel] = Evidence(
                     f"agent {_PAST[done]} {rel} (event #{ev.index})", path=rel, event=ev.index
                 )
+                break
     if not found:
         return RuleResult(rule, "pass", "no forbidden file changed")
     names = list(found)
@@ -100,6 +126,14 @@ def forbid_change(rule: Rule, ctx: Context) -> RuleResult:
     )
 
 
+def _transcript_action(ev: Event, rel: str, ctx: Context) -> str:
+    if ev.action in _ACTIONS:
+        return str(ev.action)
+    if ctx.repo is not None and not (ctx.repo / rel).exists():
+        return "add"  # not in the diff and gone now: created, then removed
+    return "modify"
+
+
 def _changed_paths(f: FileChange) -> list[str]:
     return [f.path, f.old_path] if f.status == "renamed" and f.old_path else [f.path]
 
@@ -108,8 +142,12 @@ def _changed_paths(f: FileChange) -> list[str]:
     "require-change",
     needs={"diff"},
     params={
-        "if_changed": Param("glob_list", required=True, doc="files whose change triggers it"),
-        "then_changed": Param("glob_list", required=True, doc="files that must change too"),
+        "if_changed": Param(
+            "glob_list", required=True, nonempty=True, doc="files whose change triggers it"
+        ),
+        "then_changed": Param(
+            "glob_list", required=True, nonempty=True, doc="files that must change too"
+        ),
         "except": Param("glob_list", default=[], doc="files exempt from `if_changed`"),
     },
     doc=(
@@ -148,23 +186,38 @@ def require_change(rule: Rule, ctx: Context) -> RuleResult:
         "paths": Param("glob_list", doc="files to search (default: all)"),
         "except": Param("glob_list", default=[], doc="files not searched"),
         "ignore_case": Param("bool", default=False, doc="match case-insensitively"),
+        "redact": Param(
+            "bool",
+            default=False,
+            doc="hide the matched text in evidence (for secrets): `<redacted:N chars>`",
+        ),
     },
     doc=(
         "Fails when a line added by the diff matches `pattern` (searched line by line). Only "
-        "added lines count, so pre-existing occurrences are fine. Binary files are skipped. "
-        "One finding per line, with the line number and the line itself."
+        "added lines count, so pre-existing occurrences are fine. Binary files are skipped, "
+        "and so are ruleproof's own rule definitions: `ruleproof.toml`, `.ruleproof.toml`, "
+        "the `[tool.ruleproof]` tables of `pyproject.toml` and `<!-- ruleproof: ... -->` "
+        "annotations, which would otherwise match the rule that introduces them. One finding "
+        "per line, with the line number and the line itself; with `redact = true` each match "
+        "is replaced by `<redacted:N chars>`. Strings that look like API tokens (`ghp_`, "
+        "`sk-`, `AKIA`, ...) are always cut to their first 4 characters in evidence."
     ),
 )
 def forbid_text(rule: Rule, ctx: Context) -> RuleResult:
     assert ctx.diff is not None
     pattern: str = rule.params["pattern"]
     rx = compile_regex(pattern, rule.params["ignore_case"])
+    redact: bool = rule.params["redact"]
     evidence: list[Evidence] = []
     for f in ctx.diff.files:
         if f.binary or not _selected(rule, f.path, rule.params["paths"], rule.params["except"]):
             continue
-        for line_no, text in f.added:
+        if f.path.rsplit("/", 1)[-1] in _RULE_FILES:
+            continue
+        for line_no, text in _content_lines(f):
             if rx.search(text):
+                if redact:
+                    text = rx.sub(lambda m: f"<redacted:{len(m.group())} chars>", text)
                 evidence.append(
                     Evidence(
                         f"added line matches {quoted(pattern)}",
@@ -178,6 +231,34 @@ def forbid_text(rule: Rule, ctx: Context) -> RuleResult:
     verb = "matches" if len(evidence) == 1 else "match"
     summary = f"{plural(len(evidence), 'added line')} {verb} {quoted(pattern)}"
     return RuleResult(rule, "fail", summary, cap(evidence))
+
+
+_RULE_FILES = frozenset(["ruleproof.toml", ".ruleproof.toml"])
+_ANNOTATION_START = re.compile(r"<!--\s*ruleproof:", re.IGNORECASE)
+_TOML_HEADER = re.compile(r"^\s*\[\[?\s*([\w.\"-]+)")
+
+
+def _content_lines(f: FileChange) -> list[tuple[int, str]]:
+    """Added lines of ``f`` minus ruleproof annotations and ``[tool.ruleproof]`` tables."""
+    pyproject = f.path.rsplit("/", 1)[-1] == "pyproject.toml"
+    out: list[tuple[int, str]] = []
+    in_annotation = in_table = False
+    for line_no, text in f.added:
+        if in_annotation:
+            in_annotation = "-->" not in text
+            continue
+        m = _ANNOTATION_START.search(text)
+        if m:
+            in_annotation = "-->" not in text[m.end() :]
+            continue
+        if pyproject:
+            header = _TOML_HEADER.match(text)
+            if header:
+                in_table = header.group(1).startswith("tool.ruleproof")
+            if in_table:
+                continue
+        out.append((line_no, text))
+    return out
 
 
 @register(
@@ -239,6 +320,7 @@ def _content(f: FileChange, ctx: Context) -> str:
         "max_lines": Param("int", doc="most changed lines (added + removed)"),
         "except": Param("glob_list", default=[], doc="files not counted (e.g. lockfiles)"),
     },
+    one_of=("max_files", "max_lines"),
     doc=(
         "Fails when the diff touches more than `max_files` files or changes more than "
         "`max_lines` lines (added plus removed; binary files count as files only). Set at "

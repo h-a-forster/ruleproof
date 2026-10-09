@@ -158,6 +158,7 @@ Runs with either input.
 | `paths` | globs | required | Files that must not change. |
 | `except` | globs | `[]` | Files exempt from `paths`. |
 | `actions` | list | all | Which changes count: `add`, `modify`, `delete`. |
+| `include_ignored` | bool | `false` | Also count agent edits to gitignored files (never in the diff). |
 
 ```toml
 [[rule]]
@@ -190,7 +191,8 @@ except = ["orders/models/__init__.py"]
 ### forbid-text
 
 Fails when an added line matches `pattern`. Removed and unchanged lines are ignored, so existing
-code does not fail the rule.
+code does not fail the rule. Rules files and `<!-- ruleproof: -->` annotations are skipped, so a
+rule never matches its own definition.
 
 | Parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -198,6 +200,10 @@ code does not fail the rule.
 | `paths` | globs | all files | Files to look in. |
 | `except` | globs | `[]` | Files to skip. |
 | `ignore_case` | bool | `false` | Case-insensitive match. |
+| `redact` | bool | `false` | Hide the matched text in evidence (for secrets): `<redacted:N chars>`. |
+
+Evidence never shows more than the first 4 characters of strings that look like API tokens
+(`sk-`, `ghp_`, `github_pat_`, `AKIA`, `AIza`, `glpat-`, ...), with or without `redact`.
 
 ```toml
 [[rule]]

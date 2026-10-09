@@ -10,7 +10,13 @@ from typing import Any
 import pytest
 
 from ruleproof.checks import load_all
-from ruleproof.checks._common import command_matches, command_texts, output_verdict
+from ruleproof.checks._common import (
+    command_matches,
+    command_texts,
+    invokes,
+    output_verdict,
+    shell_writes,
+)
 from ruleproof.models import (
     Context,
     Diff,
@@ -90,7 +96,6 @@ PUSH = re.compile(r"git\s+push")
         ("git commit -m 'it''s fine; git push'", False),  # PowerShell '' escape
         ('git commit -m "it\'s fine; git push"', False),
         ('git commit -m "say \\"git push\\" ok"', False),  # POSIX escaped quote
-        ('git commit -m "say `"git push`" ok"', False),  # PowerShell escaped quote
         ("git commit -m \"$(cat <<'EOF'\nDon't git push\nEOF\n)\" && git status", False),
         ("git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\" && git push", True),
         ("cat <<EOF > notes.txt\ngit push\nEOF\ngit status", False),
@@ -107,7 +112,31 @@ PUSH = re.compile(r"git\s+push")
         ('cmd.exe /C "git push"', True),
         ('grep -c "git push" log.txt', False),  # -c of grep is not a shell
         ("echo \"bash -c 'git push'\"", False),
-        ('echo "unterminated git push', False),
+        ('echo "unterminated git push', True),  # an unterminated quote is literal text
+        ("echo don't && git push", True),
+        ("echo it's && git push && echo 'x y'", True),
+        ("git commit -m 'don\\'t' && git push", True),
+        ("echo $'don\\'t' && git push", True),  # ANSI-C quoting
+        ("# Let's push the branch now\ngit push origin main", True),
+        ("cd repo  # don't forget\ngit push", True),
+        ('git commit -m "a b" # it\'s && git push', False),  # comment
+        ("echo $((1<<y))\ngit push", True),  # arithmetic, not a heredoc
+        ("git commit -F- <<EOF\nmsg\nEOF && git push", True),
+        ("bash -euo pipefail -c 'git push x'", True),
+        ("bash -ce 'git push x'", True),
+        ("bash -xc 'git push'", True),
+        ("bash -c -- 'git push'", True),
+        ("bash --login -c 'git push'", True),
+        ("bash -o pipefail -c 'git push x'", True),
+        ("sudo -u me bash -c 'git push x'", True),
+        ("pwsh -NoProfile -c 'git push'", True),
+        ('echo "`git push origin`"', True),  # POSIX backticks run even inside quotes
+        ('eval "git push origin"', True),
+        ("Invoke-Expression 'git push origin'", True),
+        ('ssh host "git push"', True),
+        ('echo "git push" | bash', True),
+        ("python -c \"import os; os.system('git push')\"", True),
+        ("bash -c \"git commit -m 'never git push'\"", False),
         ("echo $(git push)", True),
         ('echo "$(git push)"', True),  # command substitution runs even inside quotes
     ],
@@ -137,7 +166,13 @@ def test_command_texts_short_quoted_words_unquoted() -> None:
         ("12 passed, 1 skipped in 0.31s", True),
         ("===== 1 failed, 11 passed in 0.31s =====", False),
         ("===== 2 errors in 0.31s =====", False),
-        ("collected 0 items\n===== no tests ran in 0.01s =====", None),
+        ("collected 0 items\n===== no tests ran in 0.01s =====", False),
+        ("0 passed in 0.01s", None),
+        ("3 passed in 0.1s\nFAIL Required test coverage of 80% not reached.", False),
+        ("tests/test_a.py::test_x FAILED\n3 passed in 0.1s", False),
+        ("FAILED tests/test_a.py::test_x - assert 1 == 2\n1 failed in 0.1s", False),
+        ("Would reformat: a.py\n1 file would be reformatted", False),
+        ("Finished `dev` profile [unoptimized] target(s) in 1.0s", True),
         ("Ran 5 tests in 0.002s\n\nOK", True),
         ("Ran 5 tests in 0.002s\n\nOK (skipped=1)", True),
         ("Ran 5 tests in 0.002s\n\nFAILED (failures=1)", False),
@@ -245,8 +280,8 @@ E = "C:/work/repo/src/app.py"
             '"uv run pytest" ran before the last edit, not after',
         ),
         ([edit(E), cmd("ls")], "fail", 'no command matching "pytest" ran after the last edit (#0)'),
-        ([cmd("ls")], "fail", 'no command matching "pytest" ran'),
-        ([cmd("pytest")], "pass", 'ran "pytest" (exit 0)'),  # no edits: any run counts
+        ([cmd("ls")], "pass", "not required: no edits"),
+        ([cmd("pytest", 1)], "pass", "not required: no edits"),
         # the last run decides
         ([edit(E), cmd("pytest", 1), cmd("pytest", 0)], "pass", None),
         ([edit(E), cmd("pytest", 0), cmd("pytest -x", 2)], "fail", None),
@@ -265,6 +300,13 @@ def test_require_command(events: list[Event], status: str, summary: str | None) 
     assert r.status == status, r.summary
     if summary is not None:
         assert r.summary == summary
+
+
+def test_require_command_without_edits_but_with_diff_changes() -> None:
+    d = Diff("HEAD", [FileChange("src/x.py", "modified")])
+    rule = make_rule("require-command", command="pytest")
+    assert run(rule, session(cmd("ls")), d).summary == 'no command matching "pytest" ran'
+    assert run(rule, session(cmd("pytest")), d).summary == 'ran "pytest" (exit 0)'
 
 
 def test_require_command_before_edit_evidence() -> None:
@@ -399,3 +441,137 @@ def test_forbid_message() -> None:
     r = run(make_rule("forbid-message", pattern="ABSOLUTELY", ignore_case=True), s)
     assert len(r.evidence) == 1
     assert run(make_rule("forbid-message", pattern="nope"), s).status == "pass"
+
+
+# --- regressions from review ------------------------------------------------------------
+
+DENIED = (
+    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if "
+    "it was a file edit, the new_string was NOT written to the file)."
+)
+BLOCKED = "PreToolUse:Bash hook error: [guard]: git push is blocked"
+
+
+@pytest.mark.parametrize("output", [DENIED, BLOCKED])
+def test_denied_or_blocked_commands_did_not_run(output: str) -> None:
+    s = session(cmd("git push origin main", None, output, is_error=True))
+    assert run(make_rule("forbid-command", command=r"git\s+push"), s).status == "pass"
+    s = session(edit(E), cmd("uv run pytest", None, output, is_error=True))
+    assert run(make_rule("require-command", command="pytest"), s).summary == (
+        'no command matching "pytest" ran after the last edit (#0)'
+    )
+
+
+def test_failed_command_still_ran() -> None:
+    s = session(cmd("git push origin main", 1, "rejected: non-fast-forward", is_error=True))
+    assert run(make_rule("forbid-command", command=r"git\s+push"), s).status == "fail"
+
+
+def test_failed_edits_do_not_count() -> None:
+    bad = edit(E)
+    bad.is_error = True
+    s = session(cmd("pytest"), bad)
+    assert run(make_rule("require-command", command="pytest"), s).summary == (
+        "not required: no edits"
+    )
+    blocked = edit("C:/work/repo/.env", tool="Write")
+    blocked.is_error = True
+    assert run(make_rule("forbid-edit", paths=[".env"]), session(blocked)).status == "pass"
+
+
+def test_exit_zero_with_failing_output_fails() -> None:
+    out = "FAILED tests/test_a.py::test_x\n1 failed, 41 passed in 0.5s"
+    s = session(edit(E), cmd("uv run pytest -q 2>&1 | tail -5", 0, out))
+    r = run(make_rule("require-command", command="pytest"), s)
+    assert r.status == "fail"
+    assert r.summary.endswith("but it failed (exit 0 but output shows failures)")
+
+
+def test_powershell_quoting() -> None:
+    bs = "\\"
+    assert command_matches(PUSH, 'Set-Location "C:' + bs + "Program Files" + bs + '"; git push')
+    assert command_matches(PUSH, 'Write-Host "a `"b c" ; git push')
+    assert not command_matches(PUSH, 'git commit -m "say `"git push`" ok"', powershell=True)
+    assert not command_matches(PUSH, "<# git push #>\ngit status", powershell=True)
+    assert not command_matches(PUSH, "git status # git push", powershell=True)
+
+
+def test_require_command_uses_powershell_quoting_from_tool() -> None:
+    bs = "\\"
+    text = 'cd "C:' + bs + "repo" + bs + '"; uv run pytest -q'
+    ev = cmd(text)
+    ev.tool = "PowerShell"
+    assert run(make_rule("require-command", command="pytest"), session(edit(E), ev)).status == (
+        "pass"
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("uv run pytest -q", True),
+        ("cd repo && uv run pytest", True),
+        ("FOO=1 python -m pytest", True),
+        ("timeout 60 npx vitest run", True),
+        ("poetry run pytest", True),
+        ("pnpm exec jest", True),
+        (".venv/bin/pytest", True),
+        ("make test", True),
+        ("bash -lc 'uv run pytest'", True),
+        ("cat pytest.ini", False),
+        ("grep -n pytest pyproject.toml", False),
+        ("uv add --dev pytest", False),
+        ("pip show pytest", False),
+        ("uv run pytest --version", False),
+        ("uv run pytest --collect-only -q", False),
+        ("pytest --co", False),
+        ("pytest -h", False),
+        ("echo done > /tmp/pytest.log", False),
+        ('git commit -m "run pytest"', False),
+    ],
+)
+def test_invokes_requires_command_position(command: str, expected: bool) -> None:
+    assert invokes(re.compile(r"\b(?:pytest|jest|vitest)\b|make\s+test"), command) is expected
+
+
+@pytest.mark.parametrize(
+    ("command", "writes"),
+    [
+        ("echo x > notes.txt", ["notes.txt"]),
+        ("cat >> CHANGELOG.md <<EOF\nentry\nEOF", ["CHANGELOG.md"]),
+        ("pytest 2>&1 | tee out.log", ["out.log"]),
+        ("sed -i 's/a b/c/' src/a.py", ["src/a.py"]),
+        ("sed -i.bak -e s/a/b/ x.py y.py", ["x.py", "y.py"]),
+        ("git apply fix.patch", [None]),
+        ("ruff check --fix .", [None]),
+        ("npx prettier --write src", [None]),
+        ("uv run ruff format .", [None]),
+        ("cargo fmt", [None]),
+        ("ruff format --check .", []),
+        ("echo x > /dev/null", []),
+        ("pytest 2>&1", []),
+        ('echo "a > b"', []),
+        ("ls", []),
+    ],
+)
+def test_shell_writes(command: str, writes: list[str | None]) -> None:
+    assert shell_writes(command) == writes
+
+
+def test_shell_writes_count_as_edits() -> None:
+    s = session(edit(E), cmd("pytest"), cmd("sed -i s/a/b/ src/app.py"))
+    assert run(make_rule("require-command", command="pytest"), s).status == "fail"
+    s = session(edit(E), cmd("pytest"), cmd("echo note >> README.md"))
+    rule = make_rule("require-command", command="pytest", ignore_edit_paths=["*.md"])
+    assert run(rule, s).status == "pass"
+    s = session(edit(E), cmd("pytest"), cmd("echo x > /tmp/out.txt"))
+    assert run(make_rule("require-command", command="pytest"), s).status == "pass"
+    s = session(edit(E), cmd("ruff check --fix . && pytest"))  # writes, then runs
+    assert run(make_rule("require-command", command="pytest"), s).status == "pass"
+
+
+def test_tokens_masked_in_excerpts() -> None:
+    s = session(cmd("curl -H 'Authorization: token ghp_abcdefghijklmnopqrstuvwxyz0123' x"))
+    r = run(make_rule("forbid-command", command="curl"), s)
+    assert "ghp_abcdef" not in r.summary
+    assert r.evidence[0].excerpt is not None and "ghp_<redacted:" in r.evidence[0].excerpt

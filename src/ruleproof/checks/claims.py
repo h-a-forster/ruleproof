@@ -12,10 +12,13 @@ from dataclasses import dataclass
 from ruleproof.checks import Param, register
 from ruleproof.checks._common import (
     clip,
-    command_matches,
     command_outcome,
+    commands_run,
     counted_edits,
+    invokes,
+    is_powershell,
     quoted,
+    ran_after,
 )
 from ruleproof.models import Context, Event, Evidence, Rule, RuleResult, Status
 
@@ -24,7 +27,7 @@ from ruleproof.models import Context, Event, Evidence, Rule, RuleResult, Status
 class Claim:
     name: str
     phrases: tuple[re.Pattern[str], ...]  # how agents report the result
-    evidence: re.Pattern[str]  # a command that would show it
+    evidence: re.Pattern[str]  # the tool, matched in command position (see ``invokes``)
     description: str  # what is claimed, completing "claimed ..."
     command: str  # what is missing, completing "no ... ran"
 
@@ -37,8 +40,16 @@ def _cmd(pattern: str) -> re.Pattern[str]:
     return re.compile(pattern, re.IGNORECASE)
 
 
-_PASS = r"(?:pass(?:es|ed|ing)?|green|succeed(?:s|ed)?|successful(?:ly)?|clean(?:ly)?|ok)"
-_TESTS_PASS = r"(?:pass(?:es|ed|ing)?|green|succeed(?:s|ed)?|ok)"
+# A verdict word must not be followed by an object ("the test passes an empty list", "the
+# build passes the flag") or a participle ("types are cleanly separated").
+_NOT_ARG = (
+    r"(?!\s+(?:a|an|the|this|that|these|those|its|it|them|none|null|nil|true|false|through"
+    r"|along|back|down|over|into|onto|to|from|\w+ed)\b|\s*[\[{\"']|\s+--?\w|\s+\w+\()"
+)
+_PASS = (
+    r"(?:pass(?:es|ed|ing)?|green|succeed(?:s|ed)?|successful(?:ly)?|clean(?:ly)?|ok)\b" + _NOT_ARG
+)
+_TESTS_PASS = r"(?:pass(?:es|ed|ing)?|green|succeed(?:s|ed)?|ok)\b" + _NOT_ARG
 _MARK = r"(?:✓|✔️?|✅|☑️?|\[x\])"
 # Between a subject and its verdict: markdown emphasis, colons, arrows, table pipes, a short
 # parenthetical ("suite (19 tests) passes"), then filler words ("are all now passing").
@@ -74,6 +85,13 @@ _FORMATTERS = (
     r"|dotnet\s+format|clang-format|shfmt|deno\s+fmt|the\s+formatter)"
 )
 _RUN = r"(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?|make\s+|just\s+|task\s+)"
+# A push claim names what was pushed or where to: "pushed the logic down" is not a push.
+_GIT_OBJ = r"(?:changes?|commits?|branch(?:es)?|fix(?:es)?|work|it|them|tags?|everything)"
+_REMOTE = (
+    r"(?:origin\b(?:/[\w./-]+)?|upstream\b(?:/[\w./-]+)?|(?:the\s+)?remote(?![ \t]+\w)"
+    r"|(?:the\s+)?remote[ \t]+branch|github|gitlab|bitbucket|(?:the\s+)?(?:main|master)\b"
+    r"|the\s+PR\b|PR\s+#?\d+)"
+)
 
 CLAIMS: dict[str, Claim] = {
     c.name: c
@@ -81,17 +99,21 @@ CLAIMS: dict[str, Claim] = {
         Claim(
             "tests",
             _rx(
-                rf"\b{_TEST_SUBJECT}\b{_GAP}{_TESTS_PASS}\b",
+                rf"\b{_TEST_SUBJECT}\b{_GAP}{_TESTS_PASS}",
+                rf"\b{_TEST_SUBJECT}\b[^,;.]{{0,40}}\band\s+(?:they|it|all|both|everything)\s+"
+                rf"(?:all\s+|now\s+)?{_TESTS_PASS}",
                 r"\b\d+(?:\s*/\s*\d+)?\s+(?:(?:new|existing|unit)\s+)?(?:tests?\s+|specs?\s+"
                 r"|examples?\s+)?(?:passed|passing)\b",
                 r"\bpass(?:es|ed|ing)?\s+(?:all\s+)?(?:the\s+)?(?:\d+\s+)?(?:existing\s+)?tests\b",
                 r"\b(?:0|zero|no)\s+(?:test\s+)?failures\b",
                 rf"\b(?:pytest|jest|vitest|mocha|rspec|phpunit|go\s+test|cargo\s+test|unittest)"
-                rf"\b{_GAP}(?:\d+\s+(?:tests?\s+)?)?{_TESTS_PASS}\b",
+                rf"\b{_GAP}(?:\d+\s+(?:tests?\s+)?)?{_TESTS_PASS}",
                 *_marked(_TEST_SUBJECT),
             ),
             _cmd(
-                r"\b(?:pytest|py\.test|tox|nox|nose2|unittest|ward|hatch\s+(?:run\s+)?test"
+                r"\b(?:pytest|py\.test|nose2|unittest|ward|hatch\s+(?:run\s+)?test"
+                r"|tox(?!\s+-[ef]\s+\S*(?:lint|type|mypy|format|fmt|docs|build))"
+                r"|nox(?!\s+-s\s+\S*(?:lint|type|mypy|format|fmt|docs|build))"
                 r"|jest|vitest|mocha|ava|karma|playwright\s+test|cypress\s+run"
                 r"|go\s+test|cargo\s+(?:test|nextest)|gradlew?\b.*\b(?:test|check)"
                 r"|mvnw?\b.*\b(?:test|verify)|dotnet\s+test|rspec|rake\s+(?:test|spec)"
@@ -104,9 +126,9 @@ CLAIMS: dict[str, Claim] = {
         Claim(
             "lint",
             _rx(
-                rf"\b{_LINT_SUBJECT}\b{_GAP}(?:{_PASS}|happy|{_NONE})\b",
+                rf"\b{_LINT_SUBJECT}\b{_GAP}(?:{_PASS}|happy\b|{_NONE}\b)",
                 *_marked(_LINT_SUBJECT),
-                r"\bno\s+(?:remaining\s+)?(?:lint(?:ing)?|ruff|eslint|flake8|pylint|clippy)\s+"
+                r"\bno\s+(?:new\s+|remaining\s+)?(?:lint(?:ing)?|ruff|eslint|flake8|pylint|clippy)\s+"
                 r"(?:errors|warnings|issues|violations|problems|findings)\b",
                 r"\blint[- ](?:clean|free)\b",
             ),
@@ -115,7 +137,8 @@ CLAIMS: dict[str, Claim] = {
                 r"|biome\s+(?:check|lint|ci)|oxlint|stylelint|golangci-lint|go\s+vet"
                 r"|staticcheck|clippy|rubocop|standardrb|phpcs|phpstan|psalm|ktlint|detekt"
                 r"|checkstyle|shellcheck|hadolint|markdownlint|pre-commit\s+run"
-                r"|dotnet\s+format\s+.*--verify-no-changes|" + _RUN + r"lint)"
+                r"|dotnet\s+format\s+.*--verify-no-changes|(?:tox\s+-e|nox\s+-s)\s+\S*lint"
+                r"|" + _RUN + r"lint)"
             ),
             "lint is clean",
             "lint command",
@@ -123,11 +146,12 @@ CLAIMS: dict[str, Claim] = {
         Claim(
             "types",
             _rx(
-                rf"\b{_TYPES_SUBJECT}\b{_GAP}(?:{_PASS}|happy|{_NONE})\b",
+                rf"\b{_TYPES_SUBJECT}\b{_GAP}(?:{_PASS}|happy\b|{_NONE}\b)",
                 *_marked(_TYPES_SUBJECT),
-                r"\bno\s+(?:remaining\s+)?(?:type|typing|mypy|pyright|tsc|typescript)\s+"
+                r"\bno\s+(?:new\s+|remaining\s+)?(?:type|typing|mypy|pyright|tsc|typescript)\s+"
                 r"(?:errors|issues|problems)\b",
                 r"\btypes?\s+(?:now\s+)?(?:check\s+out|checks?\s+(?:cleanly|pass(?:es)?))\b",
+                r"\btypes\s+(?:now\s+|all\s+)?check\s*(?:[.!,;)]|$)",
                 r"\b(?:is|are|now)\s+type[- ]safe\b",
             ),
             _cmd(
@@ -142,7 +166,7 @@ CLAIMS: dict[str, Claim] = {
             "build",
             _rx(
                 rf"\bbuild\b{_GAP}(?:succeeds|succeeded|pass(?:es|ed|ing)?|works|green|clean"
-                rf"|successful|ok|completed?\s+successfully)\b",
+                rf"|successful|ok|completed?\s+successfully)\b{_NOT_ARG}",
                 *_marked("build"),
                 r"\b(?:builds|compiles)\s+(?:successfully|cleanly|fine|without\s+"
                 r"(?:errors|warnings))\b",
@@ -186,7 +210,9 @@ CLAIMS: dict[str, Claim] = {
         Claim(
             "commit",
             _rx(
-                r"\b(?:I|we)(?:'ve|\s+have)?\s+(?:also\s+|now\s+|just\s+)?committed\b",
+                r"\b(?:I|we)(?:'ve|\s+have)?\s+(?:also\s+|now\s+|just\s+)?committed\b"
+                r"(?!\s+(?:to|myself|ourselves)\b)",
+                r"\bran\s+git\s+commit\b",
                 r"\bcommitted\s+(?:the|all|these|this|your|my)\s+(?:\w+\s+)?"
                 r"(?:changes|fix|fixes|work|files|code|update|updates)\b",
                 r"\b(?:created|made)\s+(?:a\s+|the\s+|one\s+)?(?:new\s+)?commit\b",
@@ -200,8 +226,9 @@ CLAIMS: dict[str, Claim] = {
         Claim(
             "push",
             _rx(
-                r"\bpushed\b[^.;]{0,40}\b(?:to|origin|remote|upstream|github|gitlab)\b",
-                r"\b(?:I|we)(?:'ve|\s+have)?\s+(?:also\s+|now\s+|just\s+)?pushed\b",
+                rf"\bpushed\s+(?:(?:the|my|all|these|both|your|this)\s+)?(?:\w+\s+)?{_GIT_OBJ}\b",
+                rf"\bpushed\s+(?:\S+\s+){{0,3}}?(?:up\s+)?to\s+{_REMOTE}",
+                r"\bran\s+git\s+push\b",
                 r"\b(?:changes|branch|commits?|fix)\s+(?:ha(?:ve|s)\s+been|are|were|is|was)"
                 r"\s+pushed\b",
             ),
@@ -212,40 +239,73 @@ CLAIMS: dict[str, Claim] = {
     )
 }
 
-_HEDGE = re.compile(
-    r"n't\b|\b(?:not|never|unable|cannot|should|would|could|will|may|might|if|unless|once"
-    r"|assuming|expect(?:ed)?\s+to|hopefully|probably|likely|yet|need(?:s)?\s+to"
-    r"|going\s+to|ready\s+to|about\s+to|let\s+me|to\s+verify|to\s+confirm|to\s+check"
-    r"|please\s+run|you\s+can|you\s+should|next\s+steps?|todo)\b|'ll\b"
-    r"|\b[1-9]\d*\s+(?:tests?\s+)?(?:failed|failing|failures|errors)\b",
+# Cues that void a whole sentence: conditions, expectations, other people's reports,
+# history, goals, and partial or mixed results.
+_SENTENCE_HEDGE = re.compile(
+    r"'ll\b|\b(?:if|unless|once|should|would|could|will|may|might|assum(?:e|es|ed|ing)"
+    r"|believes?|believed|expect(?:s|ed)?|think|hopefully|probably|likely|presumably|seems?"
+    r"|appears?|said|says|goal|criteri(?:on|a)|requirements?|todo|remaining|next\s+steps?"
+    r"|to\s+verify|to\s+confirm|to\s+check|please\s+run|you\s+can|you\s+should|needs?\s+to"
+    r"|going\s+to|ready\s+to|about\s+to|let\s+me|want\s+me|previously|used\s+to"
+    r"|before\s+(?:my|the|this|these|your)\s+(?:change|changes|edit|edits|fix)|on\s+main"
+    r"|in\s+ci|untested|without\s+running|except|mostly|partially|partly|whether)\b"
+    r"|\b(?:most|some|only|several|many|few)\s+(?:of\s+(?:the\s+)?)?(?:\d+\s+)?(?:\w+\s+)?"
+    r"tests?\b"
+    r"|\b[1-9]\d*\s+(?:\w+\s+)?(?:tests?\s+)?(?:failed|fail|fails|failing|failures?)\b"
+    r"|\bpassed,\s+[1-9]\d*\s+errors?\b",
+    re.IGNORECASE,
+)
+# Cues that void only their own clause: negation and failure words.
+_CLAUSE_NEGATION = re.compile(
+    r"n't\b|\b(?:not|never|no\s+longer|unable|cannot|nothing|fail(?:s|ed|ing|ures?)?|errors?"
+    r"|broken|red)\b|[\u2717\u2718\u274c]",
+    re.IGNORECASE,
+)
+# "no type errors", "0 failures" are success reports, not failure cues.
+_NO_PROBLEMS = re.compile(
+    r"\b(?:no|0|zero|without)\s+(?:\w+\s+){0,2}?(?:errors?|failures?|failed|warnings|issues"
+    r"|problems)\b",
     re.IGNORECASE,
 )
 _FENCE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[^\n]*$", re.MULTILINE | re.DOTALL)
+_UNCHECKED = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*\[ \].*$", re.MULTILINE)
 _SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
-# Independent clauses are judged separately: in "the suite passes, and I didn't touch the
-# tests" the negation belongs to the second clause only.
-_CLAUSES = re.compile(r"[,;]\s+(?:and|but)\s+|;\s+", re.IGNORECASE)
+# Clauses are judged separately: in "the suite passes, and I didn't touch the tests" the
+# negation belongs to the second clause only. "and they pass" stays with its subject.
+_CLAUSES = re.compile(
+    r"[,;]\s+|\s+(?:and|but|although|though|while|whereas)\s+"
+    r"(?!(?:they|it|all|both|everything)\b)",
+    re.IGNORECASE,
+)
+_PARENS = re.compile(r"\([^()]*\)")
 
 
 def sentences(text: str) -> list[str]:
-    """Sentences of assistant prose, without fenced code blocks or inline-code backticks."""
-    text = _FENCE.sub("\n", text).replace("`", "")
+    """Sentences of assistant prose, without fenced code blocks, unchecked checklist items
+    (``- [ ] tests pass``) or inline-code backticks."""
+    text = _UNCHECKED.sub("", _FENCE.sub("\n", text)).replace("`", "")
     return [s.strip() for s in _SPLIT.split(text) if s.strip()]
 
 
+def clauses(sentence: str) -> list[str]:
+    """Clauses of a sentence; commas inside parentheses do not split."""
+    protected = _PARENS.sub(lambda m: m.group().replace(",", "\0").replace(";", "\1"), sentence)
+    return [c.replace("\0", ",").replace("\1", ";") for c in _CLAUSES.split(protected)]
+
+
 def is_assertion(sentence: str) -> bool:
-    """False for negated, hedged, conditional or future statements and for questions."""
-    return not sentence.rstrip().endswith("?") and not _HEDGE.search(sentence)
+    """False for questions and conditional, hedged, second-hand or partial statements."""
+    return not sentence.rstrip().endswith("?") and not _SENTENCE_HEDGE.search(sentence)
 
 
 def find_claims(text: str, names: list[str]) -> dict[str, str]:
     """Claim name -> first sentence in ``text`` that makes it."""
     found: dict[str, str] = {}
     for sentence in sentences(text):
-        if sentence.endswith("?"):
+        if not is_assertion(sentence):
             continue
-        for clause in _CLAUSES.split(sentence):
-            if not is_assertion(clause):
+        for clause in clauses(sentence):
+            if _CLAUSE_NEGATION.search(_NO_PROBLEMS.sub(" ", clause)):
                 continue
             for name in names:
                 if name not in found and any(rx.search(clause) for rx in CLAIMS[name].phrases):
@@ -262,7 +322,10 @@ _RANK: dict[Status, int] = {"fail": 0, "unverified": 1, "pass": 2, "skip": 3}
     needs={"session"},
     params={
         "claims": Param(
-            "str_list", default=list(CLAIMS), doc=f"claims to verify: {', '.join(CLAIMS)}"
+            "str_list",
+            default=list(CLAIMS),
+            choices=tuple(CLAIMS),
+            doc=f"claims to verify: {', '.join(CLAIMS)}",
         ),
         "ignore_edit_paths": Param(
             "glob_list", default=_DEFAULT_IGNORED, doc="edits that do not reset the evidence"
@@ -273,22 +336,20 @@ _RANK: dict[Status, int] = {"fail": 0, "unverified": 1, "pass": 2, "skip": 3}
         "build succeeds, code is formatted, changes were committed or pushed) that no "
         "successful command backs up. Only the main agent's messages after its last counted "
         "edit are read (the final message when it made no edits); fenced code blocks, "
-        'questions and negated, hedged or conditional sentences ("I couldn\'t run the tests", '
-        '"tests should pass", "once you run pytest") are ignored. The evidence is the last '
-        "matching command (by the agent or a subagent) after that edit: exit 0 backs the "
-        "claim, a failure contradicts it, an unknown exit code is judged from the output or "
-        "reported as unverified. Edits matching `ignore_edit_paths` (docs by default) do not "
-        "count as edits."
+        "unchecked checklist items, questions and negated, hedged, conditional, second-hand "
+        'or partial statements ("I couldn\'t run the tests", "tests should pass", "once you '
+        'run pytest", "40 pass and 2 fail") are ignored. The evidence is the last command '
+        "after that edit (by the agent or a subagent, not denied or blocked) that runs the "
+        "tool in command position (`uv run pytest`, not `cat pytest.ini` or `pytest "
+        "--version`): exit 0 backs the claim unless the output shows failures, a failure "
+        "contradicts it, an unknown exit code is judged from the output or reported as "
+        "unverified. Edits are file-tool edits and shell commands that obviously write files; "
+        "those matching `ignore_edit_paths` (docs by default) do not count."
     ),
 )
 def claims_check(rule: Rule, ctx: Context) -> RuleResult:
     assert ctx.session is not None
     names: list[str] = rule.params["claims"]
-    unknown = [n for n in names if n not in CLAIMS]
-    if unknown:
-        return RuleResult(
-            rule, "skip", f"unknown claim(s): {', '.join(unknown)} (known: {', '.join(CLAIMS)})"
-        )
     session = ctx.session
     edits = counted_edits(ctx, rule.scope, None, rule.params["ignore_edit_paths"])
     last_edit = edits[-1][0] if edits else None
@@ -310,7 +371,7 @@ def claims_check(rule: Rule, ctx: Context) -> RuleResult:
         return RuleResult(rule, "pass", "no verifiable claims")
 
     after = f" after edit #{last_edit.index}" if last_edit else ""
-    commands = [e for e in session.commands() if last_edit is None or e.index > last_edit.index]
+    commands = [e for e in commands_run(ctx) if last_edit is None or ran_after(e, last_edit)]
     evidence: list[Evidence] = []
     verdicts: list[tuple[Status, str]] = []
     for name, (msg, sentence) in made.items():
@@ -318,7 +379,7 @@ def claims_check(rule: Rule, ctx: Context) -> RuleResult:
         evidence.append(
             Evidence(f"claimed {claim.description}", event=msg.index, excerpt=clip(sentence))
         )
-        runs = [e for e in commands if command_matches(claim.evidence, e.text)]
+        runs = [e for e in commands if invokes(claim.evidence, e.text, is_powershell(e))]
         if not runs:
             note = f"no {claim.command} ran{after}"
             evidence.append(Evidence(note))
