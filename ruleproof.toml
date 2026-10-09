@@ -2,7 +2,7 @@
 version = 1
 
 # Example projects, test fixtures and benchmark templates carry their own instruction files.
-exclude = ["examples/", "tests/fixtures/", "bench/template/", "bench/tasks/"]
+exclude = ["examples/", "tests/fixtures/", "bench/template/", "bench/tasks/", "bench/variants/"]
 
 [[rule]]
 id = "tests-pass"

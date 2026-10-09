@@ -31,6 +31,9 @@ First release (0.1.0).
   drift.
 - `ruleproof hook claude-stop`: Claude Code Stop hook that blocks finishing while rules fail,
   with loop protection, `--rules` / `--base` options and a `RULEPROOF_HOOK_DISABLE` switch.
+- `ruleproof hook claude-pretool`: Claude Code PreToolUse hook that denies a command, edit or
+  tool call before it runs when it breaks an error-severity `forbid-command`, `forbid-edit`,
+  `forbid-tool` or `forbid-change` rule (`--rules` option, same disable switch).
 - GitHub Action with job summary, SARIF output and transcript support; pre-commit hooks.
 - No runtime dependencies; Python 3.11+ on Linux, macOS and Windows.
 

@@ -165,6 +165,16 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("--rules", metavar="FILE", help="rules file, relative to the hook payload's cwd")
     h.add_argument("--base", metavar="REF", default="HEAD", help="compare with REF (HEAD)")
     h.set_defaults(handler=cmd_hook_claude_stop)
+    h = hook_sub.add_parser(
+        "claude-pretool",
+        help="Claude Code PreToolUse hook: refuse tool calls that break forbid-* rules",
+        description="Claude Code PreToolUse hook: reads the hook payload on stdin and denies "
+        "the tool call when an error-severity forbid-command, forbid-edit, forbid-tool or "
+        "forbid-change rule fails on it. Always exits 0.",
+        parents=[common],
+    )
+    h.add_argument("--rules", metavar="FILE", help="rules file, relative to the hook payload's cwd")
+    h.set_defaults(handler=cmd_hook_claude_pretool)
     return parser
 
 
@@ -375,6 +385,12 @@ def cmd_hook_claude_stop(args: argparse.Namespace) -> int:
     from ruleproof.hook import claude_stop
 
     return claude_stop(sys.stdin, sys.stdout, sys.stderr, rules_file=args.rules, base=args.base)
+
+
+def cmd_hook_claude_pretool(args: argparse.Namespace) -> int:
+    from ruleproof.hook import claude_pretool
+
+    return claude_pretool(sys.stdin, sys.stdout, sys.stderr, rules_file=args.rules)
 
 
 # --------------------------------------------------------------------------- inputs

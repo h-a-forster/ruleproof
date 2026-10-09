@@ -608,9 +608,24 @@ def test_hook_command_wires_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen["rules_file"] == "../r.toml" and seen["base"] == "main"
 
 
+def test_hook_pretool_command_wires_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def claude_pretool(stdin: Any, stdout: Any, stderr: Any, **kw: Any) -> int:
+        seen["stdin"] = stdin.read()
+        seen.update(kw)
+        return 0
+
+    monkeypatch.setattr("ruleproof.hook.claude_pretool", claude_pretool)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert cli.main(["hook", "claude-pretool", "--rules", "r.toml"]) == 0
+    assert seen == {"stdin": "{}", "rules_file": "r.toml"}
+
+
 def test_hook_without_name_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["hook"]) == 2
-    assert "claude-stop" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "claude-stop" in err and "claude-pretool" in err
 
 
 # --------------------------------------------------------------------------- end to end

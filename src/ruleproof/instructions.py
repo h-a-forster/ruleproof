@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import subprocess
 from collections.abc import Iterable, Sequence
@@ -60,39 +61,70 @@ def find_instruction_files(
 ) -> list[Path]:
     """Instruction files under ``repo``, sorted by depth then repo-relative path.
 
+    In a git work tree the candidates come from ``git ls-files`` (tracked plus untracked files
+    that are not ignored), so ignored directories are never walked. Elsewhere the tree is walked.
     ``exclude`` holds globs (see ``ruleproof.paths``) for files or directories to skip, such as
     example projects and test fixtures that carry their own instruction files.
     """
-    found: set[Path] = set()
-    for rel in ROOT_INSTRUCTION_PATHS:
-        p = repo / rel
-        if p.is_file():
-            found.add(p)
-    for pattern in GLOB_INSTRUCTION_PATHS:
-        found.update(p for p in repo.glob(pattern) if p.is_file())
+    fixed = set(ROOT_INSTRUCTION_PATHS)
+    rels = _git_candidates(repo)
+    if rels is None:
+        rels = _walk_candidates(repo, max_depth)
 
+    def wanted(rel: str) -> bool:
+        if rel in fixed or any(fnmatch.fnmatchcase(rel, g) for g in GLOB_INSTRUCTION_PATHS):
+            return True
+        *dirs, name = rel.split("/")
+        return (
+            name in INSTRUCTION_NAMES
+            and len(dirs) < max_depth
+            and not any(d in SKIP_DIRS or d.startswith(".") for d in dirs)
+        )
+
+    found = {rel for rel in rels if wanted(rel)}
+    if exclude:
+        found = {rel for rel in found if not match_any(rel, exclude)}
+    ordered = sorted(found, key=lambda rel: (rel.count("/"), rel))
+    return [repo / rel for rel in ordered if (repo / rel).is_file()]
+
+
+def _git_candidates(repo: Path) -> list[str] | None:
+    """Repo-relative paths of possible instruction files per git, or None outside a work tree."""
+    specs = [f":(glob)**/{name}" for name in sorted(INSTRUCTION_NAMES)]
+    specs += [f":(glob){p}" for p in (*ROOT_INSTRUCTION_PATHS, *GLOB_INSTRUCTION_PATHS)]
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *specs],
+            cwd=repo,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.decode("utf-8", errors="replace")
+    return sorted({p for p in out.split("\0") if p})
+
+
+def _walk_candidates(repo: Path, max_depth: int) -> list[str]:
+    rels: list[str] = []
+    for rel in ROOT_INSTRUCTION_PATHS:
+        if (repo / rel).is_file():
+            rels.append(rel)
+    for pattern in GLOB_INSTRUCTION_PATHS:
+        rels.extend(p.relative_to(repo).as_posix() for p in repo.glob(pattern) if p.is_file())
     root_depth = len(repo.parts)
     for dirpath, dirnames, filenames in os.walk(repo):
         here = Path(dirpath)
         if len(here.parts) - root_depth >= max_depth:
             dirnames[:] = []
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
-        if exclude:
-            rel_dir = here.relative_to(repo).as_posix()
-            prefix = "" if rel_dir == "." else rel_dir + "/"
-            dirnames[:] = [d for d in dirnames if not match_any(f"{prefix}{d}/", exclude)]
-        for name in filenames:
-            if name in INSTRUCTION_NAMES:
-                found.add(here / name)
-
-    def key(p: Path) -> tuple[int, str]:
-        rel = p.relative_to(repo).as_posix()
-        return (rel.count("/"), rel)
-
-    if exclude:
-        found = {p for p in found if not match_any(p.relative_to(repo).as_posix(), exclude)}
-    ignored = git_ignored(repo, (p.relative_to(repo).as_posix() for p in found))
-    return sorted((p for p in found if p.relative_to(repo).as_posix() not in ignored), key=key)
+        rel_dir = here.relative_to(repo).as_posix()
+        prefix = "" if rel_dir == "." else rel_dir + "/"
+        rels.extend(prefix + name for name in filenames if name in INSTRUCTION_NAMES)
+    return rels
 
 
 def git_ignored(repo: Path, rel_paths: Iterable[str]) -> set[str]:

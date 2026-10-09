@@ -95,7 +95,7 @@ def payload(**kw: Any) -> dict[str, Any]:
     base = {
         "session_id": "s1",
         "transcript_path": "~/.claude/projects/x/s1.jsonl",
-        "cwd": "/somewhere",
+        "cwd": ".",
         "permission_mode": "default",
         "hook_event_name": "Stop",
         "stop_hook_active": False,
@@ -111,6 +111,7 @@ def h(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Harness:
 
 def test_rules_file_and_base_options(h: Harness, tmp_path: Path) -> None:
     cwd = tmp_path / "work"
+    cwd.mkdir()
     h.run(payload(cwd=str(cwd)))
     assert h.calls["load_rules"] == (h.repo, None)
     assert h.calls["from_git"] == (h.repo, "HEAD", True)
@@ -312,3 +313,219 @@ def test_end_to_end_blocks_on_real_repo(tmp_path: Path) -> None:
     )
     assert hook.claude_stop(stdin, out, io.StringIO(), env={}) == 0
     assert out.getvalue() == ""
+
+
+# --------------------------------------------------------------------------- PreToolUse
+
+PRETOOL_RULES = r"""version = 1
+
+[[rule]]
+id = "no-commit"
+description = "Never commit; leave committing to the user."
+source = "AGENTS.md:7"
+check = "forbid-command"
+command = '\bgit\s+commit\b'
+
+[[rule]]
+id = "no-webfetch"
+check = "forbid-tool"
+tool = '^WebFetch$'
+
+[[rule]]
+id = "no-generated"
+description = "Do not edit generated code in api/gen/; change the schema instead."
+source = "AGENTS.md:9"
+check = "forbid-edit"
+paths = ["api/gen/"]
+
+[[rule]]
+id = "stay-inside"
+check = "forbid-edit"
+outside_repo = true
+
+[[rule]]
+id = "no-new-bak"
+check = "forbid-change"
+paths = ["*.bak"]
+actions = ["add"]
+
+[[rule]]
+id = "warn-only"
+severity = "warning"
+check = "forbid-command"
+command = 'rm -rf'
+
+[[rule]]
+id = "not-a-pretool-check"
+check = "require-command"
+command = 'pytest'
+"""
+
+
+@pytest.fixture
+def pre_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    pytest.importorskip("ruleproof.rules")
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)  # found on disk; the hook does not spawn git
+    (repo / "ruleproof.toml").write_text(PRETOOL_RULES, encoding="utf-8")
+    return repo
+
+
+def pretool(
+    repo: Path, tool: str, tool_input: Any, env: dict[str, str] | None = None, **kw: Any
+) -> tuple[str | None, str]:
+    """Run the PreToolUse hook; return (deny reason or None, stderr)."""
+    data = {
+        "session_id": "s1",
+        "transcript_path": str(repo / "t.jsonl"),
+        "cwd": str(repo),
+        "permission_mode": "default",
+        "hook_event_name": "PreToolUse",
+        "tool_name": tool,
+        "tool_input": tool_input,
+        "tool_use_id": "toolu_1",
+    }
+    data.update(kw)
+    out, err = io.StringIO(), io.StringIO()
+    assert hook.claude_pretool(io.StringIO(json.dumps(data)), out, err, env=env or {}) == 0
+    if not out.getvalue():
+        return None, err.getvalue()
+    decision = json.loads(out.getvalue())["hookSpecificOutput"]
+    assert decision["hookEventName"] == "PreToolUse"
+    assert decision["permissionDecision"] == "deny"
+    return decision["permissionDecisionReason"], err.getvalue()
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+def test_pretool_forbid_command(pre_repo: Path, tool: str) -> None:
+    reason, _ = pretool(pre_repo, tool, {"command": "git commit -m 'wip'"})
+    assert reason is not None
+    assert reason.startswith("ruleproof: this tool call would break 1 project rule")
+    assert "1. no-commit:" in reason
+    assert "rule (AGENTS.md:7): Never commit; leave committing to the user." in reason
+    assert pretool(pre_repo, tool, {"command": "git status"}) == (None, "")
+
+
+def test_pretool_unwraps_shell_wrappers(pre_repo: Path) -> None:
+    reason, _ = pretool(pre_repo, "Bash", {"command": "bash -lc 'git commit -am x'"})
+    assert reason is not None and "no-commit" in reason
+
+
+def test_pretool_ignores_warnings_and_other_checks(pre_repo: Path) -> None:
+    assert pretool(pre_repo, "Bash", {"command": "rm -rf build"}) == (None, "")
+    assert pretool(pre_repo, "Bash", {"command": "echo done"}) == (None, "")
+
+
+def test_pretool_forbid_tool(pre_repo: Path) -> None:
+    reason, _ = pretool(pre_repo, "WebFetch", {"url": "https://example.com", "prompt": "x"})
+    assert reason is not None and "no-webfetch" in reason
+    assert pretool(pre_repo, "Read", {"file_path": str(pre_repo / "a.py")}) == (None, "")
+
+
+@pytest.mark.parametrize("tool", ["Write", "Edit", "MultiEdit"])
+def test_pretool_forbid_edit(pre_repo: Path, tool: str) -> None:
+    target = pre_repo / "api" / "gen" / "client.py"
+    reason, _ = pretool(pre_repo, tool, {"file_path": str(target), "content": "x"})
+    assert reason is not None
+    assert "no-generated" in reason and "api/gen/client.py" in reason
+    assert "change the schema instead" in reason
+    ok = pre_repo / "src" / "app.py"
+    assert pretool(pre_repo, tool, {"file_path": str(ok), "content": "x"}) == (None, "")
+
+
+def test_pretool_notebook_edit(pre_repo: Path) -> None:
+    nb = pre_repo / "api" / "gen" / "n.ipynb"
+    reason, _ = pretool(pre_repo, "NotebookEdit", {"notebook_path": str(nb), "new_source": "x"})
+    assert reason is not None and "no-generated" in reason
+
+
+def test_pretool_relative_path(pre_repo: Path) -> None:
+    reason, _ = pretool(pre_repo, "Edit", {"file_path": "api/gen/client.py"})
+    assert reason is not None and "no-generated" in reason
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows drive paths")
+def test_pretool_windows_paths(pre_repo: Path) -> None:
+    backslashed = str(pre_repo).replace("/", "\\") + "\\api\\gen\\client.py"
+    lower_drive = backslashed[0].lower() + backslashed[1:]
+    reason, _ = pretool(pre_repo, "Write", {"file_path": lower_drive, "content": "x"})
+    assert reason is not None and "no-generated" in reason
+    forward = str(pre_repo).replace("\\", "/") + "/api/gen/client.py"
+    reason, _ = pretool(pre_repo, "Write", {"file_path": forward, "content": "x"})
+    assert reason is not None and "no-generated" in reason
+    reason, _ = pretool(pre_repo, "Edit", {"file_path": "api\\gen\\client.py"})
+    assert reason is not None and "no-generated" in reason
+
+
+def test_pretool_outside_repo_edit(pre_repo: Path) -> None:
+    outside = pre_repo.parent / "elsewhere" / "notes.txt"
+    reason, _ = pretool(pre_repo, "Write", {"file_path": str(outside), "content": "x"})
+    assert reason is not None and "stay-inside" in reason and "outside the repo" in reason
+
+
+def test_pretool_forbid_change_new_file_only(pre_repo: Path) -> None:
+    reason, _ = pretool(pre_repo, "Write", {"file_path": str(pre_repo / "x.bak"), "content": ""})
+    assert reason is not None and "no-new-bak" in reason
+    (pre_repo / "old.bak").write_text("", encoding="utf-8")
+    assert pretool(pre_repo, "Edit", {"file_path": str(pre_repo / "old.bak")}) == (None, "")
+
+
+def test_pretool_finds_repo_root_from_subdir(pre_repo: Path) -> None:
+    sub = pre_repo / "api"
+    sub.mkdir()
+    reason, _ = pretool(pre_repo, "Edit", {"file_path": "gen/client.py"}, cwd=str(sub))
+    assert reason is not None and "api/gen/client.py" in reason
+
+
+def test_pretool_outside_git_uses_cwd(pre_repo: Path) -> None:
+    (pre_repo / ".git").rmdir()
+    reason, err = pretool(pre_repo, "Bash", {"command": "git commit"})
+    assert reason is not None and err == ""
+
+
+@pytest.mark.parametrize("stdin", ["", "nope", "[]", '{"cwd": "."}'])
+def test_pretool_malformed_payload_allows(pre_repo: Path, stdin: str) -> None:
+    out, err = io.StringIO(), io.StringIO()
+    assert hook.claude_pretool(io.StringIO(stdin), out, err, env={}) == 0
+    assert out.getvalue() == ""
+    assert err.getvalue().startswith("ruleproof hook: ") and err.getvalue().count("\n") == 1
+
+
+def test_pretool_odd_tool_input_does_not_crash(pre_repo: Path) -> None:
+    assert pretool(pre_repo, "Bash", "not a dict")[0] is None
+    assert pretool(pre_repo, "Write", {"file_path": 3})[0] is None
+
+
+def test_pretool_disabled(pre_repo: Path) -> None:
+    env = {"RULEPROOF_HOOK_DISABLE": "1"}
+    assert pretool(pre_repo, "Bash", {"command": "git commit"}, env=env) == (None, "")
+
+
+def test_pretool_no_rules_allows(pre_repo: Path) -> None:
+    (pre_repo / "ruleproof.toml").unlink()
+    reason, err = pretool(pre_repo, "Bash", {"command": "git commit"})
+    assert reason is None and "no rules found" in err
+
+
+def test_pretool_wrong_event(pre_repo: Path) -> None:
+    reason, err = pretool(pre_repo, "Bash", {"command": "git commit"}, hook_event_name="Stop")
+    assert reason is None and "unsupported hook event" in err
+
+
+def test_pretool_rules_option(pre_repo: Path, tmp_path: Path) -> None:
+    (tmp_path / "personal.toml").write_text(
+        'version = 1\n[[rule]]\nid = "no-push"\ncheck = "forbid-command"\ncommand = "git push"\n',
+        encoding="utf-8",
+    )
+    out = io.StringIO()
+    data = {
+        "hook_event_name": "PreToolUse",
+        "cwd": str(pre_repo),
+        "tool_name": "Bash",
+        "tool_input": {"command": "git push"},
+    }
+    hook.claude_pretool(
+        io.StringIO(json.dumps(data)), out, io.StringIO(), env={}, rules_file="../personal.toml"
+    )
+    decision = json.loads(out.getvalue())["hookSpecificOutput"]
+    assert "no-push" in decision["permissionDecisionReason"]
