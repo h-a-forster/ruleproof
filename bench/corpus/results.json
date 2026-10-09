@@ -2,30 +2,29 @@
   "totals": {
     "files": 50,
     "directives": 1960,
-    "compiled": 67,
-    "rules": 74,
-    "warnings": 35,
-    "coverage": 0.034,
+    "compiled": 62,
+    "rules": 70,
+    "warnings": 30,
+    "coverage": 0.032,
     "by_pattern": {
       "add-tests": 7,
       "license-header": 1,
       "never-commit": 2,
       "never-edit-path": 5,
-      "never-run": 15,
+      "never-run": 14,
       "never-use-code": 7,
-      "no-debug-code": 12,
+      "no-debug-code": 10,
       "no-force-push": 1,
-      "no-new-dependencies": 1,
       "no-secrets": 6,
       "no-verify": 1,
       "run-before-done": 11,
       "use-x-not-y": 5
     },
     "by_check": {
-      "forbid-change": 4,
-      "forbid-command": 24,
+      "forbid-change": 3,
+      "forbid-command": 23,
       "forbid-edit": 5,
-      "forbid-text": 22,
+      "forbid-text": 20,
       "require-change": 7,
       "require-command": 11,
       "require-text": 1
@@ -48,12 +47,11 @@
       "file": "microsoft/vscode/.github/copilot-instructions.md",
       "sha": "573eff8eb4f79194d31977e4c4d8c9dd6ec1e852",
       "directives": 72,
-      "compiled": 2,
-      "rules": 2,
-      "coverage": 0.028,
+      "compiled": 1,
+      "rules": 1,
+      "coverage": 0.014,
       "by_pattern": {
-        "license-header": 1,
-        "no-debug-code": 1
+        "license-header": 1
       }
     },
     {
@@ -154,12 +152,11 @@
       "file": "langchain-ai/langchain/AGENTS.md",
       "sha": "2dd956b8add667dac4f97605ae441d75b8ae228e",
       "directives": 70,
-      "compiled": 2,
-      "rules": 4,
-      "coverage": 0.029,
+      "compiled": 1,
+      "rules": 3,
+      "coverage": 0.014,
       "by_pattern": {
-        "never-run": 3,
-        "no-new-dependencies": 1
+        "never-run": 3
       }
     },
     {
@@ -229,11 +226,11 @@
       "file": "oven-sh/bun/CLAUDE.md",
       "sha": "a2b69f7b0618cdcb1b5800247fb17452a31c0eb7",
       "directives": 54,
-      "compiled": 5,
-      "rules": 3,
-      "coverage": 0.093,
+      "compiled": 4,
+      "rules": 2,
+      "coverage": 0.074,
       "by_pattern": {
-        "never-run": 2,
+        "never-run": 1,
         "run-before-done": 1
       }
     },
@@ -522,11 +519,11 @@
       "file": "microsoft/vscode-copilot-chat/.github/copilot-instructions.md",
       "sha": "0003f5b752d5295b4900ca6c37991f22bd0aa5b8",
       "directives": 54,
-      "compiled": 3,
-      "rules": 2,
-      "coverage": 0.056,
+      "compiled": 1,
+      "rules": 1,
+      "coverage": 0.019,
       "by_pattern": {
-        "no-debug-code": 2
+        "no-debug-code": 1
       }
     },
     {

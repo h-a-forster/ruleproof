@@ -303,7 +303,7 @@ def test_substitution_needs_two_tools(tmp_path: Path, prose: str) -> None:
 
 def test_never_edit_a_directory(tmp_path: Path) -> None:
     rule = only(tmp_path, "Never modify files in `migrations`.", "forbid-change")
-    assert rule.params == {"paths": ["migrations/"]}
+    assert rule.params == {"paths": ["migrations/"], "actions": ["modify"]}
 
 
 def test_generated_or_manual_edits_become_forbid_edit(tmp_path: Path) -> None:
@@ -560,3 +560,110 @@ def test_summary(tmp_path: Path) -> None:
     )
     assert "forbid-command 2" in summary and "1 rule is a warning" in summary
     assert "AGENTS.md:3  Prefer small functions." in summary
+
+
+# --------------------------------------------------------------------------- review regressions
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "Never edit `CHANGELOG.md` except under `## [Unreleased]`.",
+        "Never run `npm install` when the lockfile is missing.",
+        "Never use `pip install` other than in CI.",
+        "Don't run `make deploy`, but it's fine for staging.",
+        "Never add `console.log` unless you are debugging locally.",
+        "Do not touch `vendor/` apart from security patches.",
+        "Avoid `cargo test` only for slow suites.",
+        "Never run `git reset --hard` if you have uncommitted work.",
+    ],
+)
+def test_exceptions_and_conditions_we_cannot_express_compile_to_nothing(
+    tmp_path: Path, prose: str
+) -> None:
+    result = compile_text(tmp_path, prose)
+    assert result.rules == [] and len(result.uncovered) == 1
+
+
+def test_except_to_add_keeps_only_modify_and_delete(tmp_path: Path) -> None:
+    rule = only(
+        tmp_path, "Don't modify `tests/fixtures/` except to add new fixtures.", "forbid-change"
+    )
+    assert rule.params == {"paths": ["tests/fixtures/"], "actions": ["modify", "delete"]}
+    assert rule.severity == "error"
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "Never add `console.log` to the code; it's fine in `scripts/`.",
+        "Don't leave `console.log` except in `scripts/`.",
+        "No `console.log` outside `scripts/`.",
+    ],
+)
+def test_path_exceptions_become_except(tmp_path: Path, prose: str) -> None:
+    rule = only(tmp_path, prose, "forbid-text")
+    assert rule.params["except"] == ["scripts/"]
+
+
+def test_forbid_text_scope_and_exception(tmp_path: Path) -> None:
+    rule = only(tmp_path, "No `print()` in `src/` outside `cli.py` and `hook.py`.", "forbid-text")
+    assert rule.params["paths"] == ["src/**/*.py", "src/**/*.pyi"]
+    assert rule.params["except"] == ["cli.py", "hook.py"]
+
+
+def test_secret_file_exceptions_are_kept(tmp_path: Path) -> None:
+    rule = only(tmp_path, "Never commit secrets (except `.env.local.example`).", "forbid-change")
+    assert ".env.local.example" in rule.params["except"]
+
+
+def test_claims_unless_you_ran_them_is_what_the_check_does(tmp_path: Path) -> None:
+    prose = "Do not say tests pass unless you ran them after your last change."
+    assert only(tmp_path, prose, "claims").severity == "error"
+
+
+def test_unless_asked_makes_any_prohibition_a_warning(tmp_path: Path) -> None:
+    rule = only(tmp_path, "Never run `git reset --hard` unless asked.", "forbid-command")
+    assert rule.severity == "warning"
+
+
+def test_literal_command_ending_in_an_argument_is_anchored(tmp_path: Path) -> None:
+    (regex,) = commands(rules_of(tmp_path, "Never run `rm -rf /`."), "forbid-command")
+    assert matches(regex, "rm -rf /") and matches(regex, "sudo rm -rf / && ls")
+    assert not matches(regex, "rm -rf /tmp/build")
+    (flag,) = commands(rules_of(tmp_path, "Never run `git clean -fdx`."), "forbid-command")
+    assert matches(flag, "git clean -fdx build/")
+
+
+def test_require_command_skips_qa_and_docs_only_sessions(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("", encoding="utf-8")
+    rule = only(tmp_path, "Run `uv run pytest` before finishing.", "require-command")
+    assert rule.params["when_paths"] == ["*.py"]
+    assert rule.params["ignore_edit_paths"] == ["*.md", "*.rst", "docs/**"]
+
+
+def test_require_command_unless_only_docs_changed(tmp_path: Path) -> None:
+    prose = "Run `pytest` before committing, unless you only changed docs."
+    rule = only(tmp_path, prose, "require-command")
+    assert "*.md" in rule.params["ignore_edit_paths"]
+
+
+@pytest.mark.parametrize(
+    "prose, actions, severity",
+    [
+        (
+            "Do not edit `tests/fixtures/` files to make a failing test pass; fix the code.",
+            ["modify", "delete"],
+            "warning",
+        ),
+        ("Never edit `api/`.", ["modify", "delete"], "error"),
+        ("Never touch `vendor/`.", ["modify", "delete"], "error"),
+        ("Never delete files in `migrations/`.", ["delete"], "error"),
+        ("Never create files in `legacy/`.", ["add"], "error"),
+    ],
+)
+def test_edit_verbs_map_to_actions(
+    tmp_path: Path, prose: str, actions: list[str], severity: str
+) -> None:
+    rule = only(tmp_path, prose, "forbid-change")
+    assert rule.params["actions"] == actions and rule.severity == severity

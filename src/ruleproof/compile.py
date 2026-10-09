@@ -386,6 +386,7 @@ class _Sentence:
     text: str
     low: str
     spans: list[_Span]
+    masked: str  # ``low`` with code span contents blanked, for phrase matching
 
     @classmethod
     def of(cls, d: Directive) -> _Sentence:
@@ -396,7 +397,10 @@ class _Sentence:
                 break
         spans = [_Span(m.group(1).strip(), m.start(), m.end()) for m in _CODE_SPAN.finditer(text)]
         low = "".join(c.lower() if len(c.lower()) == 1 else c for c in text)  # keep offsets
-        return cls(text, low, spans)
+        masked = low
+        for sp in spans:
+            masked = masked[: sp.start + 1] + "_" * (sp.end - sp.start - 2) + masked[sp.end - 1 :]
+        return cls(text, low, spans, masked)
 
     def chains(self) -> list[list[_Span]]:
         """Runs of code spans joined only by commas, slashes, "and", "or" or "nor"."""
@@ -429,6 +433,7 @@ class _Emit:
     label: str  # short human key, used for the rule id
     description: str
     severity: Severity | None = None  # None: derived from confidence
+    handled: bool = False  # the recogniser encoded the sentence's exception / condition
 
 
 @dataclass(slots=True)
@@ -728,7 +733,23 @@ def _forbid_regex(cmd: str) -> tuple[str, str] | None:
     if not keep or (len(keep) == 1 and (len(toks) > 1 or keep[0] in _MULTI_COMMAND)):
         return None  # "never run `bun <file>`": what is left is too broad
     regex = _anchor(keep[0]) + r"\s+".join(_esc(t) for t in keep) + _end(keep[-1])
+    last = keep[-1]
+    if len(keep) > 1 and not last.startswith("-") and _is_argument(last):
+        regex += _CMD_END  # `rm -rf /` must not match `rm -rf /tmp/build`
     return regex, " ".join(keep)
+
+
+_CMD_END = r"(?=\s*(?:$|[;&|)]))"
+
+
+def _is_argument(tok: str) -> bool:
+    """A path or value argument (not a subcommand word), so a literal must end with it."""
+    return (
+        _looks_like_path_token(tok)
+        or tok in ("~", "..")
+        or tok.startswith(("~", "$", "'", '"'))
+        or not re.fullmatch(r"[a-z][\w-]*", tok)
+    )
 
 
 _MULTI_COMMAND = _words(
@@ -831,10 +852,81 @@ _CONDITION = re.compile(
     r"|writ|alter|introduc)\w*"
 )
 _QUALIFIED_AFTER = re.compile(
-    r"^\s*(?:\w+ly\s+)?(?:to|for|when|whenever|while|in|on|before|after|unless|if|during|inside"
+    r"^\s*(?:\w+ly\s+)?(?:to|for|when|whenever|while|in|on|before|after|if|during|inside"
     r"|within|against|with|without|from|until)\b"
 )
 _CONDITIONAL_TAIL = re.compile(r"\b(?:unless|except|only\s+(?:if|when)|if\s+you)\b")
+_FINE = r"(?:fine|ok|okay|allowed|acceptable|permitted|exempt)"
+_EXCEPTION = re.compile(
+    r"\bunless\b|(?<!bare )\bexcept(?:ing)?\b|\b(?:other\s+than|apart\s+from|aside\s+from"
+    r"|save\s+for)\b|\bonly\s+(?:in|for|when|if|under|inside|within|during|while|on)\b"
+    r"|\boutside\s+(?:of\s+)?(?=`)"
+    r"|\b(?:it'?s|it\s+is|that'?s|that\s+is|they'?re|they\s+are)\s+" + _FINE + r"\b"
+    r"|\b(?:is|are)\s+" + _FINE + r"\s+(?:in|for|when|if|under|inside|within|during)\b"
+    r"|\bbut\b[^.;]*?\b" + _FINE + r"\b"
+)
+"""Exception clauses: a rule that has one is dropped unless its recogniser encodes it."""
+_FORBID_CONDITION = re.compile(
+    r"\b(?:if|when|whenever|while|during|until|before|after)\b"
+    r"(?!\s+(?:you\s+)?(?:commit|push|submit|finish|open|creat|merg|send|hand|declar|complet)\w*)"
+)
+"""A condition on a prohibition ("never X when Y"), which the checks cannot see."""
+_LOCATIVE_EXCEPTION = re.compile(
+    r"^(?:but )?(?:(?:except|excepting|other than|apart from|aside from|save for)(?: for)?"
+    r"(?: (?:in|under|inside|within))?|outside(?: of)?|only (?:in|under|inside|within)"
+    r"|(?:it'?s|it is|that'?s|that is|they'?re|they are|is|are) "
+    + _FINE
+    + r" (?:in|under|inside|within|for))(?: the)?$"
+)
+_ADD_EXCEPTION = re.compile(
+    r"^(?:except|other\s+than|apart\s+from|aside\s+from|save\s+for)\s+(?:to\s+|for\s+|when\s+)?"
+    r"(?:add(?:ing)?|creat(?:e|ing))\b"
+)
+
+
+_ASKED = re.compile(
+    r"\b(?:unless|until)\s+(?:(?:the\s+)?(?:user|human|maintainers?|you(?:'re|\s+are|'ve\s+been"
+    r"|\s+have\s+been)?)\s+)?(?:\w+ly\s+)?(?:asks?|asked|tells?|told|requests?|requested"
+    r"|instruct(?:s|ed)?|approves?|approved|permitted|given\s+permission)\b"
+    r"|\bwithout\s+(?:first\s+)?(?:being\s+)?(?:explicit\w*\s+)?(?:asking|asked|approval"
+    r"|permission|confirm\w*|consent|request\w*)"
+)
+""""Unless asked": the checks cannot see the request, so such a prohibition is a warning."""
+
+
+def _exceptions(s: _Sentence) -> list[re.Match[str]]:
+    """Exception clauses in the sentence, minus "unless asked" (see ``_ASKED``)."""
+    asked = [(m.start(), m.end()) for m in _ASKED.finditer(s.masked)]
+    return [
+        m for m in _EXCEPTION.finditer(s.masked) if not any(a <= m.start() < b for a, b in asked)
+    ]
+
+
+def _clause_after(s: _Sentence, pos: int) -> tuple[str, list[_Span]]:
+    """The text from ``pos`` to the end of its clause, and the code spans in it."""
+    end = re.search(r"[.;!?](?:\s|$)|\s—\s|\)", s.masked[pos:])
+    stop = pos + end.start() if end else len(s.masked)
+    return s.low[pos:stop], [sp for sp in s.spans if pos <= sp.start and sp.end <= stop]
+
+
+def _path_exception(s: _Sentence) -> list[str] | None:
+    """Globs when every exception is "except in `a/`" / "it's fine in `b/`", else None."""
+    excs = _exceptions(s)
+    if not excs:
+        return None
+    globs: list[str] = []
+    for m in excs:
+        text, spans = _clause_after(s, m.end())
+        lead = m.group(0) + text[: spans[0].start - m.end()] if spans else ""
+        if not spans or not _LOCATIVE_EXCEPTION.match(re.sub(r"\s+", " ", lead).strip()):
+            return None
+        rest = s.masked[spans[0].start : spans[-1].end]
+        if not all(_is_path(sp.text) for sp in spans) or not re.fullmatch(
+            r"(?:`_*`|[\s,/]|\b(?:and|or)\b)*", rest
+        ):
+            return None
+        globs.extend(_path_glob(sp.text, "") for sp in spans)
+    return globs
 
 
 def _cut(text: str) -> str:
@@ -896,6 +988,9 @@ def _rec_commands(d: Directive, s: _Sentence, repo: _Repo) -> list[_Emit]:
         if not (positive and obliged):
             continue
         cond = _condition(s, chain[0])
+        handled = _docs_only_exception(s) or (
+            bool(cond) and all(m.group(0).startswith("only") for m in _exceptions(s))
+        )
         for sp in cmds:
             for regex, label in _require_regex(sp.text):
                 if _NOT_A_CHECK.search(label):
@@ -906,12 +1001,15 @@ def _rec_commands(d: Directive, s: _Sentence, repo: _Repo) -> list[_Emit]:
                     "must_succeed": True,
                     "after_last_edit": True,
                 }
+                docs_tool = bool(_DOCS_TOOL.search(label))
                 if cond is not None:
                     if not cond:
                         continue  # "when adding a rule, run X": the trigger is not checkable
                     params["when_paths"] = cond
-                elif _CONDITIONAL_TAIL.search(s.low):
-                    conf = min(conf, 0.6)
+                elif not docs_tool:
+                    params["when_paths"] = repo.code_globs()  # not for Q&A or docs-only work
+                if cond is None and not docs_tool:
+                    params["ignore_edit_paths"] = list(_DOC_GLOBS)
                 out.append(
                     _Emit(
                         "require-command",
@@ -920,9 +1018,29 @@ def _rec_commands(d: Directive, s: _Sentence, repo: _Repo) -> list[_Emit]:
                         "run-before-done",
                         label,
                         f"Run {_code(label)} after the last edit",
+                        handled=handled,
                     )
                 )
     return out
+
+
+_DOCS_TOOL = re.compile(
+    r"\b(?:docs?|markdown\w*|mdx|mkdocs|sphinx|vale|typos|codespell|spell\w*|prettier|readme)\b"
+)
+_DOCS_WORDS = re.compile(r"\b(?:docs?|documentation|markdown|readme|comments?|typos?)\b")
+
+
+def _docs_only_exception(s: _Sentence) -> bool:
+    """Every exception is "unless you only changed docs" / "except for docs-only changes"."""
+    excs = _exceptions(s)
+
+    def docs_only(m: re.Match[str]) -> bool:
+        clause = _clause_after(s, m.end())[0]
+        if not _DOCS_WORDS.search(clause):
+            return False
+        return m.group(0) == "except" or bool(re.search(r"\b(?:only|just)\b|-only\b", clause))
+
+    return bool(excs) and all(docs_only(m) for m in excs)
 
 
 def _condition(s: _Sentence, first_cmd: _Span) -> list[str] | None:
@@ -1193,7 +1311,7 @@ def _runner_substitution(s: _Sentence) -> list[_Emit]:
 
 _EDIT_VERBS = (
     r"(?:edit|modify|change|touch|update|alter|rewrite|write\s+to|hand-edit|overwrite|reformat"
-    r"|delete|remove|commit)"
+    r"|delete|remove|create|add|commit)"
 )
 _EDIT_NEG = re.compile(
     _NEG
@@ -1292,8 +1410,7 @@ def _rec_paths(d: Directive, s: _Sentence, repo: _Repo) -> list[_Emit]:
             )
         )
     negated_sentence = _NEG_ANYWHERE.search(s.low) is not None
-    if _CONDITIONAL_TAIL.search(s.low) and "unless" in s.low:
-        return out
+    excs = _exceptions(s)
     for chain in s.chains():
         before, after = s.before(chain[0]), s.after(chain[-1])
         in_dir = bool(_FILES_IN.search(before))  # "files in `migrations`": a bare word is a dir
@@ -1308,41 +1425,83 @@ def _rec_paths(d: Directive, s: _Sentence, repo: _Repo) -> list[_Emit]:
         generated = bool(_GENERATED_AFTER.match(after)) and negated_sentence
         if not (m or _NOT_EDITED_AFTER.match(after) or generated):
             continue
-        verb = m.group(1) if m else ""
-        if verb == "commit":
+        verbs = re.findall(rf"\b{_EDIT_VERBS}\b", m.group(0)) if m else []
+        if "commit" in verbs:
             continue  # "never commit `.env`" is about git, not about the working tree
         if _NOT_A_FILE_AFTER.match(after):
             continue  # "never modify the `gh/user/N` branches"
         manual = generated or bool(_MANUAL.search(s.low))
         globs = [_path_glob(sp.text, s.before(sp)) for sp in paths]
         params: dict[str, Any] = {"paths": globs}
-        if verb in ("delete", "remove"):
-            params["actions"] = ["delete"]
+        actions = _verb_actions(verbs)
+        handled = not excs
+        if excs and all(_ADD_EXCEPTION.match(e.string[e.start() :]) for e in excs):
+            # "don't modify `x/` except to add new fixtures": everything but adding
+            actions = ["modify", "delete"] if "modify" in actions else ["delete"]
+            handled = bool(actions)
+        elif excs and manual and all(_TOOL_EXCEPTION.match(e.string[e.start() :]) for e in excs):
+            handled = True  # "except via `make gen`": forbid-edit only sees the agent's edits
+        if not manual and actions != ["add", "modify", "delete"]:
+            params["actions"] = actions
+        elif manual and actions == ["add"]:
+            continue  # forbid-edit has no actions; "never create files in `x/`" is a change
         soft = bool(_SOFT_NEG.search(before[-40:]))
+        if _PURPOSE_AFTER.match(after):
+            soft = True  # "... to make a failing test pass": the purpose is not checkable
         label = "-".join(globs[:2])
         if manual:
             out.append(
                 _Emit(
                     "forbid-edit",
                     params,
-                    0.75 if soft else 0.9,
+                    0.65 if soft else 0.9,
                     "never-edit-path",
                     label,
                     "Do not edit " + ", ".join(_code(g) for g in globs) + " by hand",
+                    handled=handled,
                 )
             )
         else:
+            what = " or ".join(actions) if "actions" in params else "change"
             out.append(
                 _Emit(
                     "forbid-change",
                     params,
-                    0.7 if soft else 0.85,
+                    0.65 if soft else 0.85,
                     "never-edit-path",
                     label,
-                    "Do not change " + ", ".join(_code(g) for g in globs),
+                    f"Do not {what} " + ", ".join(_code(g) for g in globs),
+                    handled=handled,
                 )
             )
     return out
+
+
+_PURPOSE_AFTER = re.compile(
+    r"^\s*(?:(?:files?|directory|folder|contents?|code)\s+)?(?:just\s+|only\s+|simply\s+)?"
+    r"(?:to|in\s+order\s+to|so\s+(?:that|as\s+to)|for\s+the\s+sake\s+of)\b"
+)
+_TOOL_EXCEPTION = re.compile(
+    r"^(?:except|other\s+than|apart\s+from|unless)\s+(?:by\s+|via\s+|through\s+|using\s+|with\s+"
+    r"|when\s+|to\s+)?(?:running|regenerat\w*|the\s+generator|`|re-?running|generat\w*|run\b)"
+)
+
+
+def _verb_actions(verbs: list[str]) -> list[str]:
+    """``edit`` → modify+delete, ``modify`` → modify, ``delete`` → delete, ``add`` → add."""
+    if not verbs:
+        return ["add", "modify", "delete"]  # "`x/` is read-only / generated"
+    acts: set[str] = set()
+    for v in verbs:
+        if v in ("delete", "remove"):
+            acts.add("delete")
+        elif v in ("add", "create"):
+            acts.add("add")
+        elif v in ("edit", "hand-edit", "change", "touch"):
+            acts.update(("modify", "delete"))
+        else:
+            acts.add("modify")
+    return [a for a in ("add", "modify", "delete") if a in acts]
 
 
 _BACKUP = re.compile(r"\b(?:backups?|back-ups?)\s*(?:copies|copy|files?)?\b|\.bak\b|\.orig\b")
@@ -1602,17 +1761,33 @@ def _rec_forbid_text(d: Directive, s: _Sentence, repo: _Repo) -> list[_Emit]:
             r"\b(?:prefer|instead\s+of|rather\s+than)\b", s.low
         ):
             conf -= 0.15
-        if re.search(r"\b(?:except|unless|outside\s+of|other\s+than)\b", s.low):
-            conf -= 0.2
-        paths = list(marker.paths)
+        params: dict[str, Any] = {"pattern": pattern, "paths": list(marker.paths)}
+        allowed = _path_exception(s)
+        if allowed:
+            params["except"] = allowed  # "...; it's fine in `scripts/`"
+        excs = _exceptions(s)
+        stop = excs[0].start() if excs else len(s.low)
+        scoped = [
+            _path_glob(sp.text, "")
+            for sp in s.spans
+            if m.end() <= sp.start < stop
+            and _is_path(sp.text)
+            and re.search(r"\b(?:in|under|inside|within)\s+(?:the\s+)?$", s.low[: sp.start])
+        ]
+        if scoped:  # "no `print()` in `src/`"
+            params["paths"] = [
+                f"{p}**/{g}" if p.endswith("/") else p for p in scoped for g in marker.paths
+            ]
+            params["paths"] = list(dict.fromkeys(params["paths"]))
         out.append(
             _Emit(
                 "forbid-text",
-                {"pattern": pattern, "paths": paths},
+                params,
                 conf,
                 "no-debug-code",
                 marker.name,
                 f"Do not add {marker.name.replace('-', ' ')} to the code",
+                handled=allowed is not None,
             )
         )
     return out
@@ -1697,6 +1872,13 @@ def _rec_claims(d: Directive, s: _Sentence, repo: _Repo) -> list[_Emit]:
     """``never claim tests pass without running them`` → claims."""
     if _CLAIMS.search(s.low) is None:
         return []
+    verified = all(  # "unless you ran them after your last change" is what the check verifies
+        re.match(
+            r"\s*(?:you(?:'ve|\s+have)?\s+)?(?:actually\s+)?(?:ran|run|verified|executed)",
+            _clause_after(s, e.end())[0],
+        )
+        for e in _exceptions(s)
+    )
     return [
         _Emit(
             "claims",
@@ -1705,6 +1887,7 @@ def _rec_claims(d: Directive, s: _Sentence, repo: _Repo) -> list[_Emit]:
             "no-false-claims",
             "unverified-claims",
             "Do not claim results that no successful command backs",
+            handled=verified,
         )
     ]
 
@@ -1778,6 +1961,12 @@ def _rec_secrets(d: Directive, s: _Sentence, repo: _Repo) -> list[_Emit]:
                 "Do not add env or key files",
             )
         )
+    allowed = _path_exception(s)  # "(except `.env.example`)"
+    if allowed is not None:
+        for e in out:
+            e.handled = True
+            if e.check == "forbid-change":
+                e.params["except"] = list(dict.fromkeys([*e.params["except"], *allowed]))
     return out
 
 
@@ -1866,12 +2055,41 @@ _RECOGNISERS: tuple[Callable[[Directive, _Sentence, _Repo], list[_Emit]], ...] =
 # --------------------------------------------------------------------------- compile
 
 
+_FORBIDS = frozenset({"forbid-command", "forbid-change", "forbid-edit", "forbid-text"})
+_REASON = re.compile(r"\b(?:because|since|as\s+(?:this|that|it|they))\b")
+
+
+def _conditioned(s: _Sentence) -> bool:
+    """A condition qualifies the prohibition: not one in a reason ("because ... when ...") or
+    one that opens a later clause of its own ("Never X; if you need Y, do Z")."""
+    text = _ASKED.sub(" ", s.masked)
+    reason = _REASON.search(text)
+    if reason:
+        text = text[: reason.start()]
+    for i, clause in enumerate(re.split(r";|\s[—–-]\s", text)):
+        if i and re.match(r"\s*(?:if|when|whenever)\b", clause):
+            continue
+        if _FORBID_CONDITION.search(clause):
+            return True
+    return False
+
+
 def _recognise(d: Directive, repo: _Repo) -> list[tuple[CompiledRule, str]]:
     s = _Sentence.of(d)
     out: list[tuple[CompiledRule, str]] = []
     seen: set[str] = set()
+    excepted = bool(_exceptions(s))
+    asked = bool(_ASKED.search(s.masked))
+    conditioned = _conditioned(s)
     for rec in _RECOGNISERS:
         for e in rec(d, s, repo):
+            if not e.handled:
+                if excepted:
+                    continue  # "never X except Y" that the recogniser could not express
+                if e.check in _FORBIDS and conditioned:
+                    continue  # "never X when Y": the checks cannot see Y
+                if e.check in _FORBIDS and asked:
+                    e.confidence = min(e.confidence, 0.65)  # "unless asked": a warning
             if e.confidence < MIN_CONFIDENCE:
                 continue
             key = _params_key(e.check, e.params)
