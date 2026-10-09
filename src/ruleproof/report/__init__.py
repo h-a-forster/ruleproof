@@ -71,8 +71,11 @@ def counts(report: Report) -> dict[str, int]:
 
 
 def tally(report: Report) -> str:
-    """``"5 rules: 1 failed, 0 unverified, 2 skipped, 2 passed"``."""
+    """``"5 rules: 1 failed, 0 unverified, 2 skipped, 2 passed"``; doctor counts findings."""
     c = counts(report)
+    if report.kind == "doctor":
+        noun = "finding" if c["total"] == 1 else "findings"
+        return f"{c['total']} {noun}" if c["total"] else "no findings"
     noun = "rule" if c["total"] == 1 else "rules"
     return (
         f"{c['total']} {noun}: {c['failed']} failed, {c['unverified']} unverified, "

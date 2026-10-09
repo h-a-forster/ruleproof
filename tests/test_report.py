@@ -114,8 +114,10 @@ def test_text_strips_terminal_escapes_from_evidence() -> None:
 
 
 def test_text_empty_report() -> None:
-    out = text.render(Report(kind="doctor", tool_version="1", repo=None), color=False)
+    out = text.render(Report(kind="check", tool_version="1", repo=None), color=False)
     assert out == "0 rules: 0 failed, 0 unverified, 0 skipped, 0 passed\n"
+    out = text.render(Report(kind="doctor", tool_version="1", repo=None), color=False)
+    assert out == "no findings\n"
 
 
 # --------------------------------------------------------------------------- json

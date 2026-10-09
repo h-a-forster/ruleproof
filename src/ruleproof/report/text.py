@@ -71,6 +71,8 @@ def render(report: Report, color: bool, *, quiet: bool = False, unicode: bool = 
 
 def _rule_line(r: RuleResult) -> str:
     desc = one_line(r.rule.description, 200)
+    if r.rule.check == "doctor":
+        return f"check: {desc}" if desc else ""
     where = r.rule.source or r.rule.origin
     if desc and where:
         return f"rule: {desc} ({where})"

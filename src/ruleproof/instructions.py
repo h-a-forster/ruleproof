@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+import subprocess
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from ruleproof.paths import match_any
@@ -90,4 +91,26 @@ def find_instruction_files(
 
     if exclude:
         found = {p for p in found if not match_any(p.relative_to(repo).as_posix(), exclude)}
-    return sorted(found, key=key)
+    ignored = git_ignored(repo, (p.relative_to(repo).as_posix() for p in found))
+    return sorted((p for p in found if p.relative_to(repo).as_posix() not in ignored), key=key)
+
+
+def git_ignored(repo: Path, rel_paths: Iterable[str]) -> set[str]:
+    """The subset of ``rel_paths`` that git ignores; empty when git or the repo is unavailable."""
+    paths = list(rel_paths)
+    if not paths:
+        return set()
+    try:
+        proc = subprocess.run(
+            ["git", "check-ignore", "--no-index", "-z", "--stdin"],
+            cwd=repo,
+            input="\0".join(paths).encode("utf-8"),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if proc.returncode not in (0, 1):  # 1 = nothing ignored; 128 = not a repository
+        return set()
+    return {p for p in proc.stdout.decode("utf-8", errors="replace").split("\0") if p}
