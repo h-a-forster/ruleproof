@@ -384,13 +384,26 @@ def test_doctor(
 ) -> None:
     seen: dict[str, Any] = {}
 
-    def run_doctor(repo: Path, *, max_tokens: int = 2500) -> list[RuleResult]:
+    def run_doctor(repo: Path, *, max_tokens: int = 2500, exclude: Any = ()) -> list[RuleResult]:
         seen["max_tokens"] = max_tokens
+        seen["exclude"] = exclude
         return [result("doctor/size", "fail", severity)]
 
+    @dataclass
+    class Config:
+        rules: list[Rule]
+        exclude: list[str]
+        origin: str | None
+
+    def read_config(repo: Path, rules_file: Path | None = None) -> Config:
+        seen["config_repo"] = repo
+        return Config([], ["vendor/**"], "ruleproof.toml")
+
     _patch(monkeypatch, "ruleproof.doctor", run_doctor=run_doctor, DOCTOR_CHECKS={})
+    _patch(monkeypatch, "ruleproof.rules", read_config=read_config)
     assert cli.main(["doctor", "--max-tokens", "100", "--format", "json", *argv]) == code
     assert seen["max_tokens"] == 100
+    assert seen["exclude"] == ["vendor/**"] and seen["config_repo"] == fk.repo
     assert json.loads(capsys.readouterr().out)["kind"] == "doctor"
 
 
@@ -508,14 +521,18 @@ def test_checks_lists_params_and_doctor(
 def test_hook_command_wires_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
 
-    def claude_stop(stdin: Any, stdout: Any, stderr: Any) -> int:
+    def claude_stop(stdin: Any, stdout: Any, stderr: Any, **kw: Any) -> int:
         seen["stdin"] = stdin.read()
+        seen.update(kw)
         return 0
 
     monkeypatch.setattr("ruleproof.hook.claude_stop", claude_stop)
     monkeypatch.setattr("sys.stdin", io.StringIO('{"x": 1}'))
     assert cli.main(["hook", "claude-stop"]) == 0
-    assert seen["stdin"] == '{"x": 1}'
+    assert seen == {"stdin": '{"x": 1}', "rules_file": None, "base": "HEAD"}
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert cli.main(["hook", "claude-stop", "--rules", "../r.toml", "--base", "main"]) == 0
+    assert seen["rules_file"] == "../r.toml" and seen["base"] == "main"
 
 
 def test_hook_without_name_prints_help(capsys: pytest.CaptureFixture[str]) -> None:

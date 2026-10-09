@@ -140,8 +140,14 @@ def build_parser() -> argparse.ArgumentParser:
     h = hook_sub.add_parser(
         "claude-stop",
         help="Claude Code Stop hook: block finishing while rules fail",
+        description="Claude Code Stop hook: reads the hook payload on stdin and blocks "
+        "finishing while rules fail. Always exits 0.",
         parents=[common],
     )
+    h.add_argument(
+        "--rules", metavar="FILE", help="rules file (relative paths resolve against the cwd)"
+    )
+    h.add_argument("--base", metavar="REF", default="HEAD", help="compare with REF (HEAD)")
     h.set_defaults(handler=cmd_hook_claude_stop)
     return parser
 
@@ -246,9 +252,11 @@ def cmd_compile(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     from ruleproof.doctor import run_doctor
     from ruleproof.models import Report
+    from ruleproof.rules import read_config
 
     repo = _resolve_repo(args.repo, allow_plain_dir=True)
-    results = run_doctor(repo, max_tokens=args.max_tokens)
+    config = read_config(repo)
+    results = run_doctor(repo, max_tokens=args.max_tokens, exclude=config.exclude)
     report = Report(kind="doctor", tool_version=__version__, repo=str(repo), results=results)
     _emit_report(report, args)
     return _exit_code(report, args.fail_on, strict=False)
@@ -344,7 +352,7 @@ def cmd_checks(args: argparse.Namespace) -> int:
 def cmd_hook_claude_stop(args: argparse.Namespace) -> int:
     from ruleproof.hook import claude_stop
 
-    return claude_stop(sys.stdin, sys.stdout, sys.stderr)
+    return claude_stop(sys.stdin, sys.stdout, sys.stderr, rules_file=args.rules, base=args.base)
 
 
 # --------------------------------------------------------------------------- inputs

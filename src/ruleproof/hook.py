@@ -33,13 +33,21 @@ def claude_stop(
     stdout: TextIO,
     stderr: TextIO,
     env: Mapping[str, str] | None = None,
+    *,
+    rules_file: str | None = None,
+    base: str = "HEAD",
 ) -> int:
-    """Entry point for ``ruleproof hook claude-stop``. Always returns 0."""
+    """Entry point for ``ruleproof hook claude-stop``. Always returns 0.
+
+    ``rules_file`` may live outside the repo; a relative path resolves against the payload's
+    ``cwd``. ``base`` is the git ref the working tree is compared with.
+    """
     env = os.environ if env is None else env
     if env.get(DISABLE_ENV, "") not in ("", "0"):
         return 0
     try:
-        reason = evaluate(_parse_payload(stdin.read()), stderr)
+        payload = _parse_payload(stdin.read())
+        reason = evaluate(payload, stderr, rules_file=rules_file, base=base)
     except _Skip as exc:
         print(f"ruleproof hook: {exc}", file=stderr)
         return 0
@@ -65,7 +73,13 @@ def _parse_payload(text: str) -> dict[str, Any]:
     return payload
 
 
-def evaluate(payload: Mapping[str, Any], stderr: TextIO) -> str | None:
+def evaluate(
+    payload: Mapping[str, Any],
+    stderr: TextIO,
+    *,
+    rules_file: str | None = None,
+    base: str = "HEAD",
+) -> str | None:
     """Run the check for a hook payload; return the block reason, or None to let it stop."""
     from ruleproof import __version__
     from ruleproof.diff import from_git, repo_root
@@ -85,7 +99,8 @@ def evaluate(payload: Mapping[str, Any], stderr: TextIO) -> str | None:
         raise _Skip("payload has no cwd; nothing checked")
     try:
         repo = repo_root(Path(cwd))
-        rules = load_rules(repo)
+        rules_path = Path(cwd) / os.path.expanduser(rules_file) if rules_file else None
+        rules = load_rules(repo, rules_file=rules_path)
     except RuleproofError as exc:
         raise _Skip(str(exc)) from None
     if not rules:
@@ -93,7 +108,7 @@ def evaluate(payload: Mapping[str, Any], stderr: TextIO) -> str | None:
 
     diff = None
     try:
-        diff = from_git(repo, base="HEAD", include_untracked=True)
+        diff = from_git(repo, base=base, include_untracked=True)
     except RuleproofError as exc:
         print(f"ruleproof hook: diff unavailable, diff rules skipped: {exc}", file=stderr)
 

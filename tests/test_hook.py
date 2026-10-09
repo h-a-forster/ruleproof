@@ -48,6 +48,7 @@ class Harness:
         ]
         self.rules = [RULE]
         self.contexts: list[Context] = []
+        self.calls: dict[str, Any] = {}
         self.session = Session(
             agent="claude-code",
             id="s1",
@@ -61,8 +62,17 @@ class Harness:
             return self.results
 
         _patch(monkeypatch, "ruleproof.diff", repo_root=lambda p: self.repo_root(p))
-        _patch(monkeypatch, "ruleproof.diff", from_git=lambda *a, **k: Diff(base="HEAD"))
-        _patch(monkeypatch, "ruleproof.rules", load_rules=lambda *a, **k: self.rules)
+
+        def from_git(repo: Path, base: str = "HEAD", include_untracked: bool = True) -> Diff:
+            self.calls["from_git"] = (repo, base, include_untracked)
+            return Diff(base=base)
+
+        def load_rules(repo: Path, rules_file: Path | None = None, inline: bool = True) -> Any:
+            self.calls["load_rules"] = (repo, rules_file)
+            return self.rules
+
+        _patch(monkeypatch, "ruleproof.diff", from_git=from_git)
+        _patch(monkeypatch, "ruleproof.rules", load_rules=load_rules)
         _patch(monkeypatch, "ruleproof.transcripts", load_session=lambda *a, **k: self.load())
         _patch(monkeypatch, "ruleproof.engine", run_rules=run_rules)
 
@@ -72,10 +82,12 @@ class Harness:
     def load(self) -> Session:
         return self.session
 
-    def run(self, payload: Any, env: dict[str, str] | None = None) -> tuple[int, str, str]:
+    def run(
+        self, payload: Any, env: dict[str, str] | None = None, **kw: Any
+    ) -> tuple[int, str, str]:
         stdin = io.StringIO(payload if isinstance(payload, str) else json.dumps(payload))
         out, err = io.StringIO(), io.StringIO()
-        code = hook.claude_stop(stdin, out, err, env=env or {})
+        code = hook.claude_stop(stdin, out, err, env=env or {}, **kw)
         return code, out.getvalue(), err.getvalue()
 
 
@@ -95,6 +107,21 @@ def payload(**kw: Any) -> dict[str, Any]:
 @pytest.fixture
 def h(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Harness:
     return Harness(monkeypatch, tmp_path)
+
+
+def test_rules_file_and_base_options(h: Harness, tmp_path: Path) -> None:
+    cwd = tmp_path / "work"
+    h.run(payload(cwd=str(cwd)))
+    assert h.calls["load_rules"] == (h.repo, None)
+    assert h.calls["from_git"] == (h.repo, "HEAD", True)
+
+    h.run(payload(cwd=str(cwd)), rules_file="../rules/r.toml", base="main")
+    assert h.calls["load_rules"] == (h.repo, cwd / "../rules/r.toml")
+    assert h.calls["from_git"][1] == "main"
+
+    absolute = tmp_path / "elsewhere.toml"
+    h.run(payload(cwd=str(cwd)), rules_file=str(absolute))
+    assert h.calls["load_rules"][1] == absolute
 
 
 def test_blocks_on_error_failure(h: Harness) -> None:
