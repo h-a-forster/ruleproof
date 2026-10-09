@@ -23,9 +23,10 @@ jobs:
       - uses: h-a-forster/ruleproof@v0.1.0
 ```
 
-Use `fetch-depth: 0`. The action compares the base commit with the checked-out tree, so the base
-must be in the clone. On a shallow clone it fetches the base itself, falling back to
-`git fetch --unshallow`, which is slower than a full checkout.
+Use `fetch-depth: 0`. The action diffs the checked-out tree against the merge base of the base
+commit and `HEAD`, so that history must be in the clone. On a shallow clone it fetches the base
+itself, then deepens the history in steps (`git fetch --deepen`, up to 1550 commits) until the
+merge base is found, falling back to `git fetch --unshallow`. That is slower than a full checkout.
 
 Transcript rules are skipped unless you pass `transcript`: a CI run has no local agent sessions.
 

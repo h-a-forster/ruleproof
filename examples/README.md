@@ -6,7 +6,7 @@
 | [`python-service/AGENTS.md`](python-service/AGENTS.md) | Prose rules, some with inline `<!-- ruleproof: ... -->` annotations. |
 | [`python-service/CLAUDE.md`](python-service/CLAUDE.md) | Imports `@AGENTS.md`, so Claude Code and other agents read the same rules. |
 | [`python-service/ruleproof.toml`](python-service/ruleproof.toml) | One rule for every check type, each citing its AGENTS.md line. |
-| [`python-service/.claude/settings.json`](python-service/.claude/settings.json) | Registers the Claude Code Stop hook. |
+| [`python-service/.claude/settings.json`](python-service/.claude/settings.json) | Registers the Claude Code PreToolUse and Stop hooks. |
 | [`workflows/ruleproof.yml`](workflows/ruleproof.yml) | Pull request check with the GitHub Action, results uploaded as code scanning alerts. |
 | [`workflows/claude-code-action.yml`](workflows/claude-code-action.yml) | Runs Claude Code in CI with `anthropics/claude-code-action`, then checks its commits and transcript. |
 

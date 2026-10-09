@@ -34,6 +34,8 @@ $ ruleproof -q check --transcript ../session.jsonl
 17 rules: 4 failed, 0 unverified, 0 skipped, 13 passed
 ```
 
+Reproduce it with `uv run python scripts/demo.py`.
+
 The rules are those of [examples/python-service](examples/python-service); the session is a short
 scripted Claude Code transcript in which the agent edits after testing, says "All tests pass",
 runs `pip install` and hand-edits generated code.
@@ -127,7 +129,7 @@ exit code) or `skip` (an input is missing). Full reference: [docs/rules.md](docs
 | Claude Code | `~/.claude/projects/**` session files, subagents, `claude -p --output-format stream-json` | Exit codes, edits, subagent work merged by time. |
 | Codex CLI | `~/.codex/sessions/**` rollouts, `codex exec --json` | Current item records and older formats, including code-mode cells. |
 | Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | Best effort: built from the documented format, not yet tested on real sessions. |
-| Anything else | ruleproof JSONL | One event per line; see [docs/architecture.md](docs/architecture.md). |
+| Anything else | ruleproof JSONL | One event per line; see [docs/architecture.md](docs/architecture.md#generic-jsonl-format). |
 
 `ruleproof sessions` lists the sessions recorded for a repo. `ruleproof timeline` prints one, or
 exports it to JSON or SQLite (Datasette-ready).

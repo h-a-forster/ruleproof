@@ -14,8 +14,8 @@ inputs:
     default: ""
   rules:
     description: >-
-      Rules file (ruleproof.toml or pyproject.toml). Default: ruleproof.toml, then
-      [tool.ruleproof] in pyproject.toml, plus inline annotations.
+      Rules file to use instead of the default. Default: the first that exists of ruleproof.toml,
+      .ruleproof.toml and [tool.ruleproof] in pyproject.toml, plus inline annotations.
     required: false
     default: ""
   transcript:
@@ -159,13 +159,26 @@ runs:
         fi
 
         has_base() { git rev-parse --verify --quiet "$base^{commit}" > /dev/null; }
-        if ! has_base && [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
-          echo "Shallow clone without $base; fetching it (use actions/checkout with fetch-depth: 0 to skip this)."
-          if [[ "$base" =~ ^[0-9a-f]{40}$ ]]; then
+        is_shallow() { [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; }
+        # ruleproof diffs against merge-base(base, HEAD); a shallow clone needs history back to it.
+        connected() { has_base && git merge-base "$base" HEAD > /dev/null 2>&1; }
+        if is_shallow && ! connected; then
+          echo "Shallow clone: fetching history back to the merge base of $base and HEAD (use actions/checkout with fetch-depth: 0 to skip this)."
+          if ! has_base && [[ "$base" =~ ^[0-9a-f]{40}$ ]]; then
             git fetch --no-tags --quiet --depth=1 origin "$base" || true
           fi
-          if ! has_base; then
-            git fetch --no-tags --quiet --unshallow origin || true
+          wants=("$(git rev-parse HEAD)")
+          if has_base; then wants+=("$(git rev-parse "$base^{commit}")"); fi
+          # Deepen both tips in growing steps (1550 commits in all), then give up and unshallow.
+          for step in 50 100 200 400 800; do
+            if connected || ! is_shallow; then break; fi
+            echo "Deepening history by $step commits."
+            git fetch --no-tags --quiet --deepen="$step" origin "${wants[@]}" || break
+          done
+          if is_shallow && ! connected; then
+            echo "Still no merge base; fetching the full history."
+            git fetch --no-tags --quiet --unshallow origin "${wants[@]}" \
+              || git fetch --no-tags --quiet --unshallow origin || true
           fi
         fi
         if ! has_base; then

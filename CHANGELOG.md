@@ -26,6 +26,8 @@ First release (0.1.0).
 - `ruleproof sessions` and `ruleproof timeline`: find local agent sessions for a repo and export
   them as text, JSON or SQLite.
 - `ruleproof compile`: draft rules from instruction-file prose, with a coverage report.
+  Directives that already carry an inline annotation are skipped, and a rule that another
+  compiled rule covers is dropped.
 - `ruleproof doctor`: finds drift between agent instruction files, contradictions, instructions
   that disagree with the repo, dead references, oversized files, broken skills and MCP config
   drift.
@@ -36,7 +38,8 @@ First release (0.1.0).
   `forbid-tool` or `forbid-change` rule (`--rules` / `--base` options, same disable switch).
   Editing a file that did not exist at `--base` counts as an add, so a "never edit existing
   tests" rule does not stop the agent from editing tests it just wrote.
-- GitHub Action with job summary, SARIF output and transcript support; pre-commit hooks.
-- No runtime dependencies; Python 3.11+ on Linux, macOS and Windows.
+- GitHub Action with job summary, SARIF output and transcript support; pre-commit hooks. On a
+  shallow checkout the action deepens the history until the base and `HEAD` share a merge base.
+- No runtime dependencies; Python 3.11+ (tested on 3.11 to 3.14) on Linux, macOS and Windows.
 
 [Unreleased]: https://github.com/h-a-forster/ruleproof/commits/main

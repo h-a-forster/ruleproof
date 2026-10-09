@@ -150,6 +150,27 @@ def test_extract_appends_fence_commands_to_a_colon_sentence() -> None:
     assert d.text == "Before committing, run: `cargo fmt` `cargo test`"
 
 
+def test_extract_marks_items_with_an_inline_annotation() -> None:
+    text = (
+        "- Never run `pip install`.\n"
+        '  <!-- ruleproof: forbid-command id=no-pip command="pip install" -->\n'
+        "- Never edit `gen/`. Regenerate it. <!-- ruleproof: forbid-change paths=gen/ -->\n"
+        "- Never run `make deploy`.\n"
+        "  <!-- a plain comment -->\n"
+        "\n"
+        "<!-- ruleproof: forbid-tool tool=WebFetch -->\n"
+        "Never force-push.\n"
+    )
+    ds = extract_directives(text, "AGENTS.md")
+    assert [(d.line, d.text, d.annotated) for d in ds] == [
+        (1, "Never run `pip install`.", True),
+        (3, "Never edit `gen/`.", True),
+        (3, "Regenerate it.", True),
+        (4, "Never run `make deploy`.", False),
+        (8, "Never force-push.", False),  # a comment after a blank line belongs to no block
+    ]
+
+
 def test_extract_reads_list_items_under_a_negative_or_done_lead() -> None:
     text = (
         "## Never\n\n- `npm install`\n- Commit secrets.\n  This explains why.\n\n"
@@ -461,6 +482,69 @@ def test_compile_dedupes_across_files_and_counts_coverage(tmp_path: Path) -> Non
     assert [cr.rule.id for cr in result.rules] == ["no-force-push"]
     assert [d.text for d in result.uncovered] == ["Prefer small functions."]
     assert result.coverage == pytest.approx(2 / 3)
+
+
+def test_compile_skips_annotated_directives(tmp_path: Path) -> None:
+    text = (
+        "- Never run `pip install`; add dependencies with `uv add`.\n"
+        '  <!-- ruleproof: forbid-command id=no-pip command="pip3? install" -->\n'
+        "- Never run `git push --force`.\n"
+    )
+    result = compile_text(tmp_path, text)
+    assert [cr.rule.id for cr in result.rules] == ["no-force-push"]
+    assert [d.line for d in result.annotated] == [1]
+    assert [d.line for d in result.directives] == [3]
+    assert result.uncovered == [] and result.coverage == 1.0
+    toml = render_toml(result)
+    assert "# Skipped: 1 directives that inline annotations already check." in toml
+    assert "# AGENTS.md:1  Never run `pip install`" in toml
+    assert_valid(tomllib.loads(toml))
+    assert "Skipped 1 directive that inline annotations already check." in render_summary(result)
+
+
+def test_compile_drops_a_rule_another_rule_covers(tmp_path: Path) -> None:
+    result = compile_text(tmp_path, "- Don't create `.bak`, `.orig` or `*_old.py` copies.\n")
+    (cr,) = [cr for cr in result.rules if cr.rule.check == "forbid-change"]
+    assert cr.rule.id == "no-backup-files"
+    assert cr.rule.params == {"paths": ["*.bak", "*.orig", "*_old.py"], "actions": ["add"]}
+
+
+def test_compile_drops_covered_rules_across_directives(tmp_path: Path) -> None:
+    text = (
+        "- Never edit `gen/`.\n"
+        "- Never edit `gen/` or `vendor/`.\n"
+        "- Never create `*_old.py` files.\n"
+    )
+    result = compile_text(tmp_path, text)
+    assert [(cr.rule.id, cr.rule.params["paths"]) for cr in result.rules] == [
+        ("no-change-gen-vendor", ["gen/", "vendor/"]),
+        ("no-old-py", ["*_old.py"]),  # other actions: not covered
+    ]
+    assert result.uncovered == []  # the first directive is covered by the second's rule
+
+
+def test_covers() -> None:
+    from ruleproof.compile import _covers
+
+    def rule(check: str = "forbid-change", severity: Any = "error", **params: Any) -> Rule:
+        return Rule(id="", check=check, params=params, severity=severity)
+
+    big = rule(paths=["*.bak", "*_old.py"], actions=["add"])
+    assert _covers(big, rule(paths=["*_old.py"], actions=["add"]))
+    assert not _covers(big, rule(paths=["*_old.py", "*.bak"], actions=["add"]))  # equal
+    assert not _covers(big, rule(paths=["*_old.py"], actions=["add", "modify"]))
+    assert not _covers(big, rule(paths=["*_old.py"]))
+    assert not _covers(big, rule(paths=["*.tmp"], actions=["add"]))
+    assert not _covers(
+        rule(paths=["*.bak", "*_old.py"], actions=["add"], severity="warning"),
+        rule(paths=["*_old.py"], actions=["add"]),
+    )
+    assert not _covers(
+        rule("require-change", if_changed=["a", "b"], then_changed=["c"]),
+        rule("require-change", if_changed=["a"], then_changed=["c"]),
+    )
+    big_scoped = Rule(id="", check="forbid-change", params={"paths": ["a", "b"]}, scope="pkg")
+    assert not _covers(big_scoped, rule(paths=["a"]))
 
 
 def test_nested_instruction_files_get_a_scope(tmp_path: Path) -> None:

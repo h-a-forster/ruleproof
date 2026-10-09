@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "ruleproof"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Check whether a coding agent followed AGENTS.md / CLAUDE.md: rules become checks run against the diff and the session transcript."
 readme = "README.md"
 license = "MIT"
@@ -22,6 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Quality Assurance",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -39,11 +40,22 @@ ruleproof = "ruleproof.cli:main"
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 
+[tool.hatch.version]
+path = "src/ruleproof/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/ruleproof"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/ruleproof", "tests", "docs", "examples", "README.md", "LICENSE", "CHANGELOG.md"]
+include = [
+    "/src/ruleproof",
+    "/tests",
+    "/docs",
+    "/examples",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -59,6 +71,6 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src/ruleproof"]
+files = ["src/ruleproof", "scripts", ".github/scripts"]
 strict = true
 warn_unreachable = true

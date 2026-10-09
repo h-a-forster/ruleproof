@@ -36,6 +36,7 @@ class Directive:
     text: str  # the statement, Markdown emphasis and links removed, code spans kept
     kind: DirectiveKind
     lead: str = ""  # the heading or lead-in that changes its meaning ("## Never"), if any
+    annotated: bool = False  # its list item or paragraph has a <!-- ruleproof: ... --> comment
 
     @property
     def location(self) -> str:
@@ -56,6 +57,7 @@ class CompileResult:
     directives: list[Directive] = field(default_factory=list)
     rules: list[CompiledRule] = field(default_factory=list)
     uncovered: list[Directive] = field(default_factory=list)
+    annotated: list[Directive] = field(default_factory=list)  # skipped: already checked
 
     @property
     def coverage(self) -> float:
@@ -124,6 +126,11 @@ class _Block:
     is_item: bool = False
     lead: str = ""  # heading or "...:" lead-in that governs a list item
     fence_commands: list[str] = field(default_factory=list)
+    annotated: bool = False  # a <!-- ruleproof: ... --> comment belongs to this block
+
+
+_ANNOTATION = re.compile(r"<!--\s*ruleproof:")
+_INLINE_COMMENT = re.compile(r"<!--.*?-->")
 
 
 _NEGATIVE_HEADING = re.compile(
@@ -176,7 +183,9 @@ def extract_directives(text: str, rel_path: str) -> list[Directive]:
     ("must", "never", "prefer", ...) or starts with an imperative verb. List items are read in
     the context of their heading or lead-in ("## Never", "Before committing:"), and a sentence
     ending in ``:`` directly followed by a shell code fence gets the fence's commands appended
-    as code spans (``Before committing, run: `cargo fmt` `cargo test```).
+    as code spans (``Before committing, run: `cargo fmt` `cargo test```). Directives from a
+    list item or paragraph that carries a ``<!-- ruleproof: ... -->`` annotation are marked
+    ``annotated``: the annotation already checks them.
     """
     out: list[Directive] = []
     for block in _blocks(text.splitlines()):
@@ -185,7 +194,9 @@ def extract_directives(text: str, rel_path: str) -> list[Directive]:
             read = _with_lead(clean, block.lead) if block.is_item and k == 0 else clean
             if _is_directive(read) or (read != clean and "`" in clean):
                 lead = block.lead if read != clean else ""
-                out.append(Directive(rel_path, line, clean, _kind(read), lead))
+                out.append(
+                    Directive(rel_path, line, clean, _kind(read), lead, annotated=block.annotated)
+                )
     return out
 
 
@@ -245,6 +256,8 @@ def _blocks(lines: list[str]) -> list[_Block]:
             continue
         stripped = raw.strip()
         if stripped.startswith("<!--"):
+            if cur is not None and _ANNOTATION.match(stripped):
+                cur.annotated = True  # the annotation on the lines below an item or paragraph
             in_comment = "-->" not in stripped
             continue
         if not stripped:
@@ -266,6 +279,16 @@ def _blocks(lines: list[str]) -> list[_Block]:
             colon_lead = ""
             continue
         body = _QUOTE.sub("", raw)
+        annotated = _ANNOTATION.search(body) is not None
+        if annotated:  # an annotation at the end of the line: "- Never X. <!-- ruleproof: -->"
+            body = _INLINE_COMMENT.sub("", body).rstrip()
+            if "<!--" in body:  # the comment goes on over the next lines
+                body = body[: body.index("<!--")].rstrip()
+                in_comment = True
+            if not body.strip():
+                if cur is not None:
+                    cur.annotated = True
+                continue
         item = _LIST_ITEM.match(body)
         if item:
             close()
@@ -281,6 +304,8 @@ def _blocks(lines: list[str]) -> list[_Block]:
             cur = _Block([(lineno, body.strip())])
         else:
             cur.parts.append((lineno, body.strip()))
+        if annotated:
+            cur.annotated = True
     close()
     return blocks
 
@@ -2127,12 +2152,14 @@ def compile_files(paths: list[Path], repo: Path) -> CompileResult:
     """Extract directives from ``paths`` and compile the ones a recogniser understands.
 
     Identical rules from several directives (AGENTS.md and CLAUDE.md saying the same thing) are
-    emitted once; every directive they came from counts as covered.
+    emitted once; every directive they came from counts as covered. A rule that another rule
+    already covers (``*_old.py`` next to ``*.bak``, ``*_old.py``) is dropped. Directives with
+    a ``<!-- ruleproof: ... -->`` annotation are skipped and listed in ``annotated``.
     """
     info = _Repo.scan(repo)
     result = CompileResult()
-    seen: dict[str, CompiledRule] = {}
-    ids: set[str] = set()
+    seen: set[str] = set()
+    found: list[tuple[CompiledRule, str]] = []
     for path in paths:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -2141,6 +2168,9 @@ def compile_files(paths: list[Path], repo: Path) -> CompileResult:
         rel = _relative(path, repo)
         result.files.append(rel)
         for d in extract_directives(text, rel):
+            if d.annotated:
+                result.annotated.append(d)
+                continue
             result.directives.append(d)
             compiled = _recognise(d, info)
             if not compiled:
@@ -2148,12 +2178,42 @@ def compile_files(paths: list[Path], repo: Path) -> CompileResult:
                 continue
             for cr, label in compiled:
                 key = _params_key(cr.rule.check, cr.rule.params) + repr(cr.rule.scope)
-                if key in seen:
-                    continue
-                cr.rule.id = _unique_id(_base_id(cr.rule, label), ids)
-                seen[key] = cr
-                result.rules.append(cr)
+                if key not in seen:
+                    seen.add(key)
+                    found.append((cr, label))
+    ids: set[str] = set()
+    for cr, label in found:
+        if any(other is not cr and _covers(other.rule, cr.rule) for other, _ in found):
+            continue
+        cr.rule.id = _unique_id(_base_id(cr.rule, label), ids)
+        result.rules.append(cr)
     return result
+
+
+_SUBSET_PARAMS = ("paths",)  # list params where more entries forbid more
+_SEVERITY_RANK = {"info": 0, "warning": 1, "error": 2}
+
+
+def _covers(big: Rule, small: Rule) -> bool:
+    """``big`` fails whenever ``small`` does: the same forbid check, scope and parameters,
+    except that ``small``'s path globs are a strict subset of ``big``'s, and ``big`` is at
+    least as severe."""
+    if big.check != small.check or big.check not in _FORBIDS or big.scope != small.scope:
+        return False
+    if big.params.keys() != small.params.keys():
+        return False
+    if _SEVERITY_RANK[big.severity] < _SEVERITY_RANK[small.severity]:
+        return False
+    strict = False
+    for key, value in small.params.items():
+        other = big.params[key]
+        if key in _SUBSET_PARAMS and isinstance(value, list) and isinstance(other, list):
+            if not set(value) <= set(other):
+                return False
+            strict = strict or set(value) != set(other)
+        elif value != other:
+            return False
+    return strict
 
 
 def _relative(path: Path, repo: Path) -> str:
@@ -2256,6 +2316,13 @@ def render_toml(result: CompileResult) -> str:
             "#",
         ]
         lines += [f"# {d.location}  {_quote(d)}" for d in result.uncovered]
+    if result.annotated:
+        lines += [
+            "",
+            f"# Skipped: {len(result.annotated)} directives that inline annotations already check.",
+            "#",
+        ]
+        lines += [f"# {d.location}  {_quote(d)}" for d in result.annotated]
     return "\n".join(lines) + "\n"
 
 
@@ -2315,6 +2382,11 @@ def render_summary(result: CompileResult) -> str:
     ]
     if by_check:
         lines.append("Rules: " + ", ".join(f"{c} {n}" for c, n in sorted(by_check.items())))
+    if result.annotated:
+        lines.append(
+            f"Skipped {_plural(len(result.annotated), 'directive')} that inline annotations "
+            "already check."
+        )
     warnings = sum(1 for cr in result.rules if cr.rule.severity == "warning")
     if warnings:
         verb = "is a warning" if warnings == 1 else "are warnings"

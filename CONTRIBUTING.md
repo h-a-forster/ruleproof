@@ -23,8 +23,9 @@ uv run ruff format --check     # `uv run ruff format` to fix
 uv run mypy
 ```
 
-CI runs the same commands on Linux, macOS and Windows with Python 3.11, 3.12 and 3.13, builds the
-wheel, and runs the GitHub Action on the pull request. Optionally, install the pre-commit hooks
+CI runs pytest on Linux, macOS and Windows with Python 3.11, 3.12, 3.13 and 3.14, and ruff,
+ruff format and mypy once on Linux. It also builds the wheel and runs the GitHub Action on the
+pull request. Optionally, install the pre-commit hooks
 defined in this repo's `.pre-commit-hooks.yaml` in a test project to try them.
 
 ## Ground rules
@@ -79,7 +80,8 @@ defined in this repo's `.pre-commit-hooks.yaml` in a test project to try them.
 
 Maintainers:
 
-1. Update `version` in `pyproject.toml`.
+1. Update `__version__` in `src/ruleproof/__init__.py`, the single source of the version
+   (`pyproject.toml` reads it from there).
 2. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` with the release
    date, add a new empty `## [Unreleased]` above it, and update the links at the bottom
    (`[Unreleased]` compares `vX.Y.Z...HEAD`; add `[X.Y.Z]`).
