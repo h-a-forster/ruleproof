@@ -174,6 +174,12 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
     )
     h.add_argument("--rules", metavar="FILE", help="rules file, relative to the hook payload's cwd")
+    h.add_argument(
+        "--base",
+        metavar="REF",
+        default="HEAD",
+        help="files absent at REF count as new, so editing them is an add (default: HEAD)",
+    )
     h.set_defaults(handler=cmd_hook_claude_pretool)
     return parser
 
@@ -390,7 +396,7 @@ def cmd_hook_claude_stop(args: argparse.Namespace) -> int:
 def cmd_hook_claude_pretool(args: argparse.Namespace) -> int:
     from ruleproof.hook import claude_pretool
 
-    return claude_pretool(sys.stdin, sys.stdout, sys.stderr, rules_file=args.rules)
+    return claude_pretool(sys.stdin, sys.stdout, sys.stderr, rules_file=args.rules, base=args.base)
 
 
 # --------------------------------------------------------------------------- inputs

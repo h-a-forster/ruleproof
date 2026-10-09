@@ -529,3 +529,88 @@ def test_pretool_rules_option(pre_repo: Path, tmp_path: Path) -> None:
     )
     decision = json.loads(out.getvalue())["hookSpecificOutput"]
     assert "no-push" in decision["permissionDecisionReason"]
+
+
+EXISTING_TESTS_RULES = """version = 1
+
+[[rule]]
+id = "no-editing-existing-tests"
+description = "Never edit existing tests; add new ones."
+check = "forbid-change"
+paths = ["tests/**"]
+actions = ["modify", "delete"]
+"""
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    pytest.importorskip("ruleproof.rules")
+    repo = tmp_path / "g"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "ruleproof.toml").write_text(EXISTING_TESTS_RULES, encoding="utf-8")
+    (repo / "tests" / "test_old.py").write_text("def test_a(): pass\n", encoding="utf-8")
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    git("config", "commit.gpgsign", "false")
+    git("add", ".")
+    git("commit", "-q", "-m", "init")
+    return repo
+
+
+def test_pretool_edit_of_file_created_after_base_is_an_add(git_repo: Path) -> None:
+    new = git_repo / "tests" / "test_new.py"
+    new.write_text("def test_b(): pass\n", encoding="utf-8")  # created earlier in the session
+    edit = {"file_path": str(new), "old_string": "pass", "new_string": "assert True"}
+    assert pretool(git_repo, "Edit", edit) == (None, "")
+    old = {
+        "file_path": str(git_repo / "tests" / "test_old.py"),
+        "old_string": "a",
+        "new_string": "c",
+    }
+    reason, _ = pretool(git_repo, "Edit", old)
+    assert reason is not None and "no-editing-existing-tests" in reason
+
+
+def test_pretool_base_option(git_repo: Path) -> None:
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "second"], cwd=git_repo, check=True
+    )
+    new = git_repo / "tests" / "test_new.py"
+    new.write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "third"], cwd=git_repo, check=True)
+    data = {"file_path": str(new), "old_string": "1", "new_string": "2"}
+    reason, _ = pretool(git_repo, "Edit", data)  # present at HEAD: a modify
+    assert reason is not None
+    out = io.StringIO()
+    payload_ = {
+        "hook_event_name": "PreToolUse",
+        "cwd": str(git_repo),
+        "tool_name": "Edit",
+        "tool_input": data,
+    }
+    hook.claude_pretool(
+        io.StringIO(json.dumps(payload_)), out, io.StringIO(), env={}, base="HEAD~1"
+    )
+    assert out.getvalue() == ""  # absent at HEAD~1: an add
+
+
+def test_pretool_unknown_base_falls_back_to_disk(git_repo: Path) -> None:
+    new = git_repo / "tests" / "test_new.py"
+    new.write_text("x = 1\n", encoding="utf-8")
+    out = io.StringIO()
+    data = {
+        "hook_event_name": "PreToolUse",
+        "cwd": str(git_repo),
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(new)},
+    }
+    hook.claude_pretool(io.StringIO(json.dumps(data)), out, io.StringIO(), env={}, base="nope")
+    assert "no-editing-existing-tests" in out.getvalue()  # exists on disk: a modify

@@ -81,8 +81,11 @@ Claude Code runs PreToolUse hooks after Claude proposes a tool call and before i
 1. reads the payload from stdin: `tool_name`, `tool_input` and `cwd`;
 2. turns the proposed call into a one-event session: `Bash` / `PowerShell` become a command
    (`tool_input.command`, unwrapped from `bash -lc '...'` and similar), `Write`, `Edit`,
-   `MultiEdit` and `NotebookEdit` become a file edit (`file_path` / `notebook_path`; an add when
-   the file does not exist yet, else a modify), anything else a tool call;
+   `MultiEdit` and `NotebookEdit` become a file edit (`file_path` / `notebook_path`), anything
+   else a tool call. An edit is an add when the file does not exist yet, or when it exists but
+   not at `--base` (a file Claude created earlier in the session); otherwise it is a modify.
+   So a `forbid-change` rule with `actions = ["modify", "delete"]` on `tests/**` ("never edit
+   existing tests") lets Claude keep editing the new tests it wrote;
 3. runs the `error`-severity rules whose check is `forbid-command`, `forbid-edit`, `forbid-tool`
    or `forbid-change` against that event (no git diff, so it is fast);
 4. if one fails, prints
@@ -107,6 +110,7 @@ command writes. The Stop hook and `ruleproof check` still see those through the 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--rules FILE` | discovery | Rules file to use. A relative path resolves against the payload's `cwd`. The file may live outside the repo. |
+| `--base REF` | `HEAD` | Files absent at this ref count as new. Checked with one `git cat-file` call, only for an edit of an existing file when a `forbid-change` rule is active; if git cannot answer, the on-disk check stands. |
 
 ## Stop: `claude-stop`
 

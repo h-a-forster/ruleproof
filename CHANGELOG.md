@@ -33,7 +33,9 @@ First release (0.1.0).
   with loop protection, `--rules` / `--base` options and a `RULEPROOF_HOOK_DISABLE` switch.
 - `ruleproof hook claude-pretool`: Claude Code PreToolUse hook that denies a command, edit or
   tool call before it runs when it breaks an error-severity `forbid-command`, `forbid-edit`,
-  `forbid-tool` or `forbid-change` rule (`--rules` option, same disable switch).
+  `forbid-tool` or `forbid-change` rule (`--rules` / `--base` options, same disable switch).
+  Editing a file that did not exist at `--base` counts as an add, so a "never edit existing
+  tests" rule does not stop the agent from editing tests it just wrote.
 - GitHub Action with job summary, SARIF output and transcript support; pre-commit hooks.
 - No runtime dependencies; Python 3.11+ on Linux, macOS and Windows.
 

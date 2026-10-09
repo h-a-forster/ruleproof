@@ -264,15 +264,17 @@ def claude_pretool(
     env: Mapping[str, str] | None = None,
     *,
     rules_file: str | None = None,
+    base: str = "HEAD",
 ) -> int:
     """Entry point for ``ruleproof hook claude-pretool``. Always returns 0.
 
     Denies the proposed tool call when an error-severity forbid-command, forbid-edit,
-    forbid-tool or forbid-change rule fails on it; otherwise prints nothing.
+    forbid-tool or forbid-change rule fails on it; otherwise prints nothing. ``base`` decides
+    whether an edit adds or modifies a file: a file absent at ``base`` counts as added.
     """
 
     def fn(payload: Mapping[str, Any], err: TextIO) -> str | None:
-        return evaluate_pretool(payload, err, rules_file=rules_file)
+        return evaluate_pretool(payload, err, rules_file=rules_file, base=base)
 
     reason = _run(stdin, stderr, env, fn)
     if reason:
@@ -288,7 +290,11 @@ def claude_pretool(
 
 
 def evaluate_pretool(
-    payload: Mapping[str, Any], stderr: TextIO, *, rules_file: str | None = None
+    payload: Mapping[str, Any],
+    stderr: TextIO,
+    *,
+    rules_file: str | None = None,
+    base: str = "HEAD",
 ) -> str | None:
     """Judge a PreToolUse payload; return the deny reason, or None to stay out of the way."""
     from ruleproof.engine import run_rules
@@ -305,6 +311,9 @@ def evaluate_pretool(
     ]
     if not rules:
         return None
+    event = session.events[0]
+    if event.action == "modify" and any(r.check == "forbid-change" for r in rules):
+        _reclassify_new_file(event, repo, cwd, base)
     results = run_rules(rules, Context(repo=repo, diff=None, session=session))
     failed = [r for r in results if r.status == "fail"]
     return deny_reason(failed) if failed else None
@@ -318,6 +327,43 @@ def _nearest_git_root(cwd: Path) -> Path:
         if (d / ".git").exists():
             return d
     return start
+
+
+def _reclassify_new_file(event: Event, repo: Path, cwd: str, base: str) -> None:
+    """Mark an edit of a file that exists now but not at ``base`` as an add.
+
+    Without this, editing a file the agent created earlier in the session would count as
+    modifying it. When git cannot answer (no repo, unknown ref), the on-disk answer stands.
+    """
+    import os
+    import subprocess
+
+    from ruleproof.diff import _REPO_ENV_VARS
+    from ruleproof.paths import relpath_in_repo
+
+    rel = relpath_in_repo(event.path or "", repo, cwd)
+    if not rel or "\n" in rel or not (repo / ".git").exists():
+        return
+    # One process answers both "does base exist?" and "does the path exist at base?".
+    query = f"{base}^{{commit}}\n{base}:{rel}\n".encode()
+    env = {k: v for k, v in os.environ.items() if k not in _REPO_ENV_VARS}  # use `repo` only
+    try:
+        proc = subprocess.run(
+            ["git", "cat-file", "--batch-check"],
+            cwd=repo,
+            input=query,
+            capture_output=True,
+            env=env,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    lines = proc.stdout.decode("utf-8", "replace").splitlines()
+    if proc.returncode != 0 or len(lines) != 2 or lines[0].endswith(" missing"):
+        return
+    if lines[1].endswith(" missing"):
+        event.action = "add"
 
 
 def proposed_call_session(payload: Mapping[str, Any], cwd: str) -> Session:
