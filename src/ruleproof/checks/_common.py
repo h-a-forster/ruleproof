@@ -541,6 +541,14 @@ _PREFIX_2 = frozenset(
         "bundle exec",
     )
 )
+_PREFIX_VALUE_OPTIONS = frozenset(
+    # Runner options that take a separate value: `uv run --project DIR pytest`.
+    ["--project", "--directory", "--python", "-p", "--package", "--env-file", "--extra"]
+    + ["--group", "--only-group", "--with", "--with-editable", "--with-requirements", "--index"]
+    + ["--index-url", "--extra-index-url", "--config-file", "-C", "-P", "--filter", "-F"]
+    + ["--dir", "--cwd", "--workspace", "-n", "--name", "--prefix", "-u", "--unset"]
+    + ["--chdir", "-s", "--signal", "-k", "--kill-after"]
+)
 _PYTHON = re.compile(r"^(?:python[\d.]*|py)$")
 _NOT_A_RUN = frozenset(["--version", "-V", "--help", "-h", "--collect-only", "--co"])
 
@@ -598,6 +606,8 @@ def _candidates(words: list[str]) -> Iterable[list[str]]:
             return
         while pos < len(words) and (words[pos].startswith("-") or words[pos][:1].isdigit()):
             pos += 1
+            if words[pos - 1] in _PREFIX_VALUE_OPTIONS:
+                pos += 1  # the option's value, never the tool
             if pos < len(words):
                 yield [_program(words[pos]), *words[pos + 1 :]]
 
