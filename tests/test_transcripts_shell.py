@@ -8,6 +8,7 @@ from ruleproof.transcripts._codemode import parse_cell, patch_files, scan
 from ruleproof.transcripts._shell import truncate, unwrap
 
 BS = chr(92)  # a backslash, spelled out to keep escapes readable below
+NL = BS + "n"  # a JavaScript newline escape
 
 
 @pytest.mark.parametrize(
@@ -109,6 +110,7 @@ mytools.exec_command({cmd: "not tools"});
 
 
 def test_parse_cell_patch_only_when_apply_patch_called() -> None:
-    patch = "*** Begin Patch\\n*** Update File: x.py\\n*** End Patch"
-    assert parse_cell(f'await tools.apply_patch("{patch}");').patches == [("modify", "x.py")]
-    assert parse_cell(f'const p = "{patch}";').patches == []
+    patch = "*** Begin Patch" + NL + "*** Update File: x.py" + NL + "*** End Patch"
+    (call,) = parse_cell(f'await tools.apply_patch("{patch}");').calls
+    assert call.patch is not None and patch_files(call.patch) == [("modify", "x.py")]
+    assert parse_cell(f'const p = "{patch}";').calls == []

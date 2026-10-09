@@ -27,6 +27,7 @@ from ruleproof.models import EditAction, Event, EventKind, Session
 from ruleproof.transcripts._codemode import parse_cell, patch_files
 from ruleproof.transcripts._shell import truncate, unwrap
 from ruleproof.transcripts._util import (
+    RECORD_ERRORS,
     content_text,
     finish,
     int_or_none,
@@ -35,6 +36,7 @@ from ruleproof.transcripts._util import (
     ms_to_iso,
     one_line,
     open_text,
+    sort_by_time,
     str_or_none,
     summarize,
     warn,
@@ -115,8 +117,12 @@ def _parse_file(path: Path, session: Session, actor: str, primary: bool) -> _Sta
     for rec in iter_records(path, warnings):
         try:
             _record(st, rec)
-        except (AttributeError, TypeError, KeyError, ValueError) as exc:
+        except RECORD_ERRORS as exc:
             warn(warnings, f"skipped a malformed {rec.get('type')} record ({type(exc).__name__})")
+    if st.items_mode:
+        # Items are written when they complete but stamped with their start time; order by
+        # start so a command that began before an edit is not mistaken for a later check.
+        st.events = sort_by_time(st.events)
     prefix = "" if primary else f"{path.name}: "
     for w in warnings:
         warn(session.warnings, prefix + w)
@@ -268,19 +274,18 @@ def _code_cell(st: _State, source: str, ts: str | None) -> list[Event]:
     cell = parse_cell(source)
     out: list[Event] = []
     for call in cell.calls:
-        if call.tool == "apply_patch":
-            continue
-        if call.tool == "exec_command":
-            if st.items_mode:
-                continue
-            if call.command is not None:
-                out.append(_add(st, Event(0, EventKind.COMMAND, unwrap(call.command), ts, "exec")))
-                continue
-        out.append(_add(st, Event(0, EventKind.TOOL, one_line(call.args), ts, call.tool)))
-    if not st.items_mode:
-        for action, path in cell.patches:
-            ev = Event(0, EventKind.EDIT, path, ts, "apply_patch", path=path, action=action)
-            out.append(_add(st, ev))
+        if call.tool in ("exec_command", "apply_patch") and st.items_mode:
+            continue  # the CommandExecution / FileChange items carry these
+        if call.tool == "exec_command" and call.command is not None:
+            out.append(_add(st, Event(0, EventKind.COMMAND, unwrap(call.command), ts, "exec")))
+        elif call.tool == "apply_patch" and call.patch is not None:
+            out += _patch_events(st, call.patch, ts)
+        elif call.tool in ("exec_command", "apply_patch"):
+            what = "command" if call.tool == "exec_command" else "patch"
+            text = f"unresolved {what}: {one_line(call.args)}"
+            out.append(_add(st, Event(0, EventKind.TOOL, text, ts, call.tool)))
+        else:
+            out.append(_add(st, Event(0, EventKind.TOOL, one_line(call.args), ts, call.tool)))
     if not cell.calls:
         out.append(_add(st, Event(0, EventKind.TOOL, one_line(source), ts, "exec")))
     return out

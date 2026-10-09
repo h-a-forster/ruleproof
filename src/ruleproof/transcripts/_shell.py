@@ -16,6 +16,12 @@ from ruleproof.models import OUTPUT_LIMIT
 
 _POSIX_SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish", "ash"}
 _POWERSHELLS = {"powershell", "pwsh"}
+_SHELLS = _POSIX_SHELLS | _POWERSHELLS | {"cmd"}
+# Prefix commands skipped when (and only when) a shell wrapper follows them.
+_PREFIXES = {"env", "sudo", "nohup", "time", "command", "exec"}
+_PREFIX_VALUE_FLAGS = {"-u", "-g", "-C", "-S", "--unset", "--chdir", "--user", "--group"}
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _Rest = Callable[[int], str]  # raw remainder of the command line from token i
 
 _PS_VALUE_FLAGS = {
@@ -54,6 +60,8 @@ def unwrap(command: str | Sequence[str]) -> str:
         text = command.strip()
     else:
         argv = [str(a) for a in command]
+        if not argv:
+            return ""
         inner = _unwrap_argv(argv)
         text = inner if inner is not None else _join(argv)
     for _ in range(3):
@@ -86,22 +94,69 @@ def _unwrap_string(text: str) -> str | None:
 
 
 def _unwrap_tokens(tokens: list[tuple[str, int, int]], rest: _Rest) -> str | None:
-    exe = _exe_name(tokens[0][0])
+    tokens = _merge_spaced_exe(tokens)
+    start = _skip_prefixes(tokens)
+    if start >= len(tokens):
+        return None
+    shell = tokens[start:]
+    exe = _exe_name(shell[0][0])
+
+    def shell_rest(i: int) -> str:
+        return rest(start + i)
+
     if exe in _POSIX_SHELLS:
-        return _posix(tokens)
+        return _posix(shell, shell_rest)
     if exe in _POWERSHELLS:
-        return _powershell(tokens, rest, positional_is_command=exe == "powershell")
+        return _powershell(shell, shell_rest, positional_is_command=exe == "powershell")
     if exe == "cmd":
-        return _cmd(tokens, rest)
+        return _cmd(shell, shell_rest)
     return None
 
 
-def _posix(tokens: list[tuple[str, int, int]]) -> str | None:
+def _merge_spaced_exe(tokens: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
+    """Rejoin an unquoted Windows path with spaces, e.g. ``C:/Program Files/Git/bin/bash.exe``."""
+    if not _DRIVE_RE.match(tokens[0][0]) or _exe_name(tokens[0][0]) in _SHELLS:
+        return tokens
+    for j in range(1, min(len(tokens), 6)):
+        if _exe_name(tokens[j][0]) in _SHELLS and re.search(r"[\\/]", tokens[j][0]):
+            merged = " ".join(t[0] for t in tokens[: j + 1])
+            return [(merged, tokens[0][1], tokens[j][2]), *tokens[j + 1 :]]
+    return tokens
+
+
+def _skip_prefixes(tokens: list[tuple[str, int, int]]) -> int:
+    """Index of the first token after ``env VAR=x``, ``sudo -u x``, ``nohup``, ``time``, ...
+
+    Returns 0 unless a shell wrapper follows, so ``sudo pip install x`` is left alone.
+    """
+    i = 0
+    while i < len(tokens) and _exe_name(tokens[i][0]) in _PREFIXES:
+        i += 1
+        while i < len(tokens):
+            tok = tokens[i][0]
+            if tok in _PREFIX_VALUE_FLAGS:
+                i += 2
+            elif tok.startswith("-") or _ASSIGNMENT_RE.match(tok):
+                i += 1
+            else:
+                break
+    return i if i < len(tokens) and _exe_name(tokens[i][0]) in _SHELLS else 0
+
+
+def _posix(tokens: list[tuple[str, int, int]], rest: _Rest) -> str | None:
+    """The ``-c`` script, followed by anything after it on the command line.
+
+    ``bash -lc 'pytest -q' && git push`` becomes ``pytest -q && git push``: dropping the tail
+    would hide commands from the checks.
+    """
     i, seen_c = 1, False
     while i < len(tokens):
         tok = tokens[i][0]
         if tok in ("-o", "+o", "-O", "+O"):
             i += 2
+            continue
+        if tok == "--" and seen_c:
+            i += 1
             continue
         if tok.startswith("--") and len(tok) > 2:
             i += 1
@@ -110,7 +165,10 @@ def _posix(tokens: list[tuple[str, int, int]]) -> str | None:
             seen_c = seen_c or "c" in tok[1:]
             i += 1
             continue
-        return tok if seen_c else None
+        if not seen_c:
+            return None
+        tail = rest(i + 1).strip() if i + 1 < len(tokens) else ""
+        return f"{tok} {tail}" if tail else tok
     return None
 
 

@@ -3,6 +3,10 @@
 Homes: ``$CLAUDE_CONFIG_DIR`` or ``~/.claude``; ``$CODEX_HOME`` or ``~/.codex``;
 ``$GEMINI_CLI_HOME`` or ``~``, holding ``.gemini``. Listing reads only the first lines of each
 file (enough for the session id, working directory and start time).
+
+A session belongs to a repo when the working directory it recorded at start is the repo or a
+directory inside it. A session started in a parent folder that later ``cd``-ed into the repo is
+therefore not found; pass its transcript path or id instead.
 """
 
 from __future__ import annotations
@@ -13,16 +17,17 @@ import os
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
 from ruleproof.errors import TranscriptError
 from ruleproof.transcripts import AGENTS, detect_agent
-from ruleproof.transcripts._util import str_or_none
+from ruleproof.transcripts._util import BOM, open_text, str_or_none
 
 DISCOVERABLE = ("claude-code", "codex", "gemini-cli")
 _HEAD_LINES = 100
-_HEAD_BYTES = 1 << 20
+_MSYS_RE = re.compile(r"^[\\/]([A-Za-z])(?:[\\/](.*))?$")  # Path("/c/x") prints as \c\x
 _CLAUDE_DIR_MAX = 200  # Claude Code shortens longer encoded project names
 
 
@@ -64,7 +69,7 @@ def find_sessions(
     if agent is not None and agent not in AGENTS:
         raise TranscriptError(f"unknown agent {agent!r}; expected one of {', '.join(AGENTS)}")
     agents = [agent] if agent else list(DISCOVERABLE)
-    repo_s = str(Path(repo).expanduser().resolve())
+    repo_s = str(Path(native_path(str(repo))).expanduser().resolve())
     candidates: list[tuple[float, str, Path, str | None]] = []
     if "claude-code" in agents:
         candidates += [
@@ -89,6 +94,8 @@ def find_sessions(
 
 def resolve_session(spec: str, repo: Path, agent: str | None = None) -> SessionRef:
     """``latest``, a transcript path, or a session-id prefix → one session."""
+    if not spec.strip():
+        raise TranscriptError("empty session id; pass latest, a transcript path or a session id")
     if spec == "latest":
         refs = find_sessions(repo, agent, limit=1)
         if not refs:
@@ -97,7 +104,7 @@ def resolve_session(spec: str, repo: Path, agent: str | None = None) -> SessionR
                 f"no {who} sessions found for {repo}; pass --transcript FILE or --session ID"
             )
         return refs[0]
-    path = Path(spec).expanduser()
+    path = Path(native_path(spec)).expanduser()
     if path.is_file():
         name = agent or detect_agent(path)
         ref = _head(name, path, _mtime(path), None) if name in DISCOVERABLE else None
@@ -120,6 +127,14 @@ def resolve_session(spec: str, repo: Path, agent: str | None = None) -> SessionR
 def _by_prefix(refs: list[SessionRef], spec: str) -> list[SessionRef]:
     s = spec.lower()
     return [r for r in refs if r.id.lower().startswith(s) or r.path.stem.lower().startswith(s)]
+
+
+def native_path(path: str) -> str:
+    """On Windows, ``/c/Users/x`` (Git Bash / MSYS) -> ``C:/Users/x``; elsewhere unchanged."""
+    m = _MSYS_RE.match(path.strip())
+    if os.name == "nt" and m:
+        return f"{m.group(1).upper()}:/{m.group(2) or ''}"
+    return path
 
 
 def normalize_dir(path: str) -> str:
@@ -236,20 +251,17 @@ def _read_json(path: Path) -> Any:
 
 
 def _head_lines(path: Path, max_lines: int = _HEAD_LINES) -> Iterator[dict[str, Any]]:
+    """JSON objects among the first ``max_lines`` lines (whole lines, however long)."""
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            read = 0
-            for i, line in enumerate(fh):
-                read += len(line)
-                if i >= max_lines or read > _HEAD_BYTES:
-                    break
+        with open_text(path) as fh:
+            for line in islice(fh, max_lines):
                 try:
-                    rec = json.loads(line.lstrip("\ufeff"))
+                    rec = json.loads(line.lstrip(BOM))
                 except json.JSONDecodeError:
                     continue
                 if isinstance(rec, dict):
                     yield rec
-    except OSError:
+    except (OSError, TranscriptError):
         return
 
 

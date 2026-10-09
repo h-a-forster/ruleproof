@@ -6,14 +6,16 @@ formats apart by content. ``discover`` finds sessions on disk and ``export`` ren
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
+from contextlib import closing
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
 from ruleproof.errors import TranscriptError
 from ruleproof.models import EventKind, Session
 from ruleproof.transcripts import claude, codex, gemini, generic
+from ruleproof.transcripts._util import iter_records
 
 AGENTS = ("claude-code", "codex", "gemini-cli", "generic")
 
@@ -23,7 +25,6 @@ _PARSERS: dict[str, Callable[[Path, bool], Session]] = {
     gemini.AGENT: gemini.parse,
     generic.AGENT: generic.parse,
 }
-_HEAD_BYTES = 1 << 20
 _HEAD_LINES = 200
 _CLAUDE_ONLY_TYPES = {"queue-operation", "file-history-snapshot", "summary", "attachment"}
 
@@ -64,36 +65,9 @@ def _existing_file(path: str | Path) -> Path:
 
 
 def _head_records(path: Path) -> list[dict[str, Any]]:
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            head = fh.read(_HEAD_BYTES).lstrip("\ufeff")
-            complete = not fh.read(1)
-    except OSError as exc:
-        raise TranscriptError(f"cannot read transcript {path}: {exc.strerror or exc}") from exc
-    records: list[dict[str, Any]] = []
-    for line in head.splitlines()[:_HEAD_LINES]:
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(rec, dict):
-            records.append(rec)
-    if records:
-        return records
-    stripped = head.lstrip()
-    if stripped[:1] in ("[", "{"):
-        try:
-            whole = json.loads(stripped if complete else _read_all(path))
-        except json.JSONDecodeError:
-            return []
-        items = whole if isinstance(whole, list) else [whole]
-        return [r for r in items[:_HEAD_LINES] if isinstance(r, dict)]
-    return []
-
-
-def _read_all(path: Path) -> str:
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        return fh.read().lstrip("\ufeff").lstrip()
+    """The first records of a transcript (whole lines, however long; at most ``_HEAD_LINES``)."""
+    with closing(iter_records(path, [])) as records:
+        return list(islice(records, _HEAD_LINES))
 
 
 def _classify(rec: dict[str, Any]) -> str | None:

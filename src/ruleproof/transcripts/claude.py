@@ -16,6 +16,7 @@ from ruleproof.errors import TranscriptError
 from ruleproof.models import EditAction, Event, EventKind, Session
 from ruleproof.transcripts._shell import truncate, unwrap
 from ruleproof.transcripts._util import (
+    RECORD_ERRORS,
     content_text,
     finish,
     iter_records,
@@ -73,16 +74,16 @@ def _parse_stream(path: Path, session: Session, actor: str, primary: bool = True
     for rec in iter_records(path, warnings):
         if not isinstance(rec.get("type"), str):
             continue
-        if primary:
-            _session_info(st, rec)
         if rec["type"] in _CLAUDE_TYPES or rec.get("sessionId"):
             st.recognised += 1
         try:
+            if primary:
+                _session_info(st, rec)
             if rec["type"] == "assistant":
                 _assistant(st, rec)
             elif rec["type"] == "user":
                 _user(st, rec)
-        except (AttributeError, TypeError, KeyError, ValueError) as exc:
+        except RECORD_ERRORS as exc:
             warn(warnings, f"skipped a malformed {rec['type']} record ({type(exc).__name__})")
     prefix = "" if primary else f"{path.name}: "
     for w in warnings:

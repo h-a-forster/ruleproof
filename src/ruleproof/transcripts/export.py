@@ -16,17 +16,20 @@ _TEXT_WIDTH = 120
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
+    key INTEGER PRIMARY KEY,
+    id TEXT NOT NULL,
     agent TEXT NOT NULL,
     path TEXT NOT NULL,
     cwd TEXT,
     started_at TEXT,
     model TEXT,
     event_count INTEGER NOT NULL,
-    warnings TEXT NOT NULL
+    warnings TEXT NOT NULL,
+    UNIQUE (id, path)
 );
 CREATE TABLE IF NOT EXISTS events (
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    session INTEGER NOT NULL REFERENCES sessions(key) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
     idx INTEGER NOT NULL,
     kind TEXT NOT NULL,
     timestamp TEXT,
@@ -38,9 +41,10 @@ CREATE TABLE IF NOT EXISTS events (
     exit_code INTEGER,
     is_error INTEGER,
     output TEXT NOT NULL,
-    PRIMARY KEY (session_id, idx)
+    PRIMARY KEY (session, idx)
 );
 CREATE INDEX IF NOT EXISTS events_kind ON events(kind);
+CREATE INDEX IF NOT EXISTS events_session_id ON events(session_id);
 """
 
 
@@ -111,15 +115,20 @@ def to_json(session: Session) -> str:
 
 
 def write_sqlite(sessions: list[Session], path: Path) -> None:
-    """Write sessions to a SQLite file; re-writing a session id replaces its rows."""
+    """Write sessions to a SQLite file.
+
+    A session is identified by its id and transcript path (two files can carry the same id);
+    writing one again replaces its rows.
+    """
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(_SCHEMA)
         with conn:
             for s in sessions:
-                conn.execute("DELETE FROM events WHERE session_id = ?", (s.id,))
-                conn.execute(
-                    "INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                conn.execute("DELETE FROM sessions WHERE id = ? AND path = ?", (s.id, s.path))
+                cur = conn.execute(
+                    "INSERT INTO sessions (id, agent, path, cwd, started_at, model, event_count,"
+                    " warnings) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         s.id,
                         s.agent,
@@ -132,9 +141,10 @@ def write_sqlite(sessions: list[Session], path: Path) -> None:
                     ),
                 )
                 conn.executemany(
-                    "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         (
+                            cur.lastrowid,
                             s.id,
                             e.index,
                             e.kind.value,

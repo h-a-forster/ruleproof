@@ -17,6 +17,7 @@ from ruleproof.errors import TranscriptError
 from ruleproof.models import EditAction, Event, EventKind, Session
 from ruleproof.transcripts._shell import truncate, unwrap
 from ruleproof.transcripts._util import (
+    RECORD_ERRORS,
     content_text,
     finish,
     iter_records,
@@ -54,7 +55,7 @@ def parse(path: Path, include_subagents: bool = True) -> Session:
     for msg in messages:
         try:
             _message(session, msg)
-        except (AttributeError, TypeError, KeyError, ValueError) as exc:
+        except RECORD_ERRORS as exc:
             warn(warnings, f"skipped a malformed message ({type(exc).__name__})")
     for w in warnings:
         warn(session.warnings, w)

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import re
+from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
@@ -13,7 +14,9 @@ from ruleproof.models import Event, Session
 
 BOM = chr(0xFEFF)
 MAX_WARNINGS = 50
-_PEEK = 1 << 20
+# What a malformed record can raise inside a parser: caught per record, reported as a warning.
+RECORD_ERRORS = (AttributeError, TypeError, LookupError, ValueError)
+_SURROGATE_RE = re.compile(f"[{chr(0xD800)}-{chr(0xDFFF)}]")
 SUMMARY_LIMIT = 200
 
 _SUMMARY_KEYS = (
@@ -47,15 +50,17 @@ def open_text(path: Path) -> TextIO:
         raise TranscriptError(f"cannot read transcript {path}: {exc.strerror or exc}") from exc
 
 
-def iter_records(path: Path, warnings: list[str]) -> Iterator[dict[str, Any]]:
+def iter_records(path: Path, warnings: list[str]) -> Generator[dict[str, Any], None, None]:
     """Yield the JSON objects of a JSONL file, or of a file holding one JSON array/object.
 
     JSONL is streamed line by line. Malformed lines are skipped with a warning. CRLF and a
     leading byte-order mark are tolerated.
     """
     with open_text(path) as fh:
-        head = fh.read(_PEEK).lstrip(BOM)
-        start = head.lstrip()
+        first = fh.readline()
+        while first and not first.strip(BOM).strip():
+            first = fh.readline()
+        start = first.lstrip(BOM).lstrip()
         if start.startswith("[") or (start.startswith("{") and not _json_line(start)):
             try:
                 whole = json.loads(start + fh.read())
@@ -200,7 +205,39 @@ def merge_streams(streams: list[list[Event]]) -> list[Event]:
     return [k[3] for k in keyed]
 
 
+def sort_by_time(events: list[Event]) -> list[Event]:
+    """Stable sort by timestamp; an event without one keeps the time of the event before it."""
+    keyed: list[tuple[float, int, Event]] = []
+    last = float("-inf")
+    for i, ev in enumerate(events):
+        ts = parse_ts(ev.timestamp)
+        if ts is not None:
+            last = ts
+        keyed.append((last, i, ev))
+    keyed.sort(key=lambda k: (k[0], k[1]))
+    return [k[2] for k in keyed]
+
+
+def clean(text: str) -> str:
+    """Pair UTF-16 surrogates and replace lone ones with U+FFFD, so the text can be encoded."""
+    if not _SURROGATE_RE.search(text):
+        return text
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
+
+def _clean_opt(text: str | None) -> str | None:
+    return None if text is None else clean(text)
+
+
 def finish(session: Session) -> Session:
+    """Number the events and make every string safe to encode."""
+    session.id, session.path = clean(session.id), clean(session.path)
+    session.cwd, session.model = _clean_opt(session.cwd), _clean_opt(session.model)
+    session.started_at = _clean_opt(session.started_at)
+    session.warnings = [clean(w) for w in session.warnings]
     for i, ev in enumerate(session.events):
         ev.index = i
+        ev.text, ev.output, ev.actor = clean(ev.text), clean(ev.output), clean(ev.actor)
+        ev.path, ev.tool = _clean_opt(ev.path), _clean_opt(ev.tool)
+        ev.timestamp = _clean_opt(ev.timestamp)
     return session
