@@ -88,4 +88,5 @@ Maintainers:
 3. Merge, then push the tag `vX.Y.Z`.
 
 The release workflow checks that the tag matches the version, publishes to PyPI with trusted
-publishing, and creates the GitHub release from the changelog section.
+publishing when the repository variable `PUBLISH_PYPI` is `true`, and creates the GitHub
+release from the changelog section.

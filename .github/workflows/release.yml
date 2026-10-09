@@ -66,6 +66,8 @@ jobs:
   pypi:
     name: Publish to PyPI
     needs: build
+    # Off until a PyPI trusted publisher exists: set the repository variable PUBLISH_PYPI=true.
+    if: vars.PUBLISH_PYPI == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -82,7 +84,9 @@ jobs:
 
   github-release:
     name: GitHub release
-    needs: pypi
+    needs: [build, pypi]
+    # Runs when PyPI publishing succeeded or was switched off.
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.pypi.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

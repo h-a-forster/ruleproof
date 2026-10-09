@@ -58,10 +58,10 @@ ruleproof makes the checkable part of the rules mechanical, so review can focus 
 ## Install
 
 ```sh
-uv tool install ruleproof
+uv tool install git+https://github.com/h-a-forster/ruleproof@v0.1.0
 ```
 
-or `pipx install ruleproof`, or `pip install ruleproof`. Python 3.11+. Linux, macOS, Windows.
+or `pipx install git+https://github.com/h-a-forster/ruleproof@v0.1.0`. Python 3.11+. Linux, macOS, Windows.
 
 ## Quick start
 

@@ -19,7 +19,7 @@ decision.
 1. Install ruleproof where the hook's shell can find it:
 
    ```sh
-   uv tool install ruleproof    # or: pipx install ruleproof
+   uv tool install git+https://github.com/h-a-forster/ruleproof@v0.1.0
    ```
 
 2. Add rules: a `ruleproof.toml` or inline annotations in `AGENTS.md` / `CLAUDE.md`

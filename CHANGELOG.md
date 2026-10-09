@@ -6,7 +6,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-First release (0.1.0).
+## [0.1.0] - 2026-10-10
+
+First release.
 
 ### Added
 
@@ -42,4 +44,5 @@ First release (0.1.0).
   shallow checkout the action deepens the history until the base and `HEAD` share a merge base.
 - No runtime dependencies; Python 3.11+ (tested on 3.11 to 3.14) on Linux, macOS and Windows.
 
-[Unreleased]: https://github.com/h-a-forster/ruleproof/commits/main
+[Unreleased]: https://github.com/h-a-forster/ruleproof/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/h-a-forster/ruleproof/releases/tag/v0.1.0
