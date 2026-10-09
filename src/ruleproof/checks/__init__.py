@@ -27,6 +27,8 @@ class Param:
     required: bool = False
     default: Any = None
     doc: str = ""
+    choices: tuple[str, ...] = ()  # allowed values for str / str_list params; empty = any
+    nonempty: bool = False  # list params: an empty list is a configuration error
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +39,7 @@ class CheckSpec:
     params: dict[str, Param] = field(default_factory=dict)
     doc: str = ""  # one paragraph, shown by `ruleproof checks`
     needs_any: bool = False  # True: run when at least one of `needs` is present
+    one_of: tuple[str, ...] = ()  # at least one of these params must be set (non-default)
 
 
 REGISTRY: dict[str, CheckSpec] = {}
@@ -49,11 +52,14 @@ def register(
     params: dict[str, Param] | None = None,
     doc: str = "",
     needs_any: bool = False,
+    one_of: tuple[str, ...] = (),
 ) -> Callable[[CheckFn], CheckFn]:
     def deco(fn: CheckFn) -> CheckFn:
         if name in REGISTRY:
             raise ValueError(f"check {name!r} registered twice")
-        REGISTRY[name] = CheckSpec(name, fn, frozenset(needs), dict(params or {}), doc, needs_any)
+        REGISTRY[name] = CheckSpec(
+            name, fn, frozenset(needs), dict(params or {}), doc, needs_any, one_of
+        )
         return fn
 
     return deco
