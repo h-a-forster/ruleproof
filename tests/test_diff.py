@@ -65,7 +65,11 @@ def worktree(tmp_path_factory: pytest.TempPathFactory, isolated_git: Path) -> Pa
     (repo / "script.sh").write_text("echo hi\n", encoding="utf-8")
     (repo / "crlf.txt").write_bytes(b"x\r\n")
     (repo / "noeol.txt").write_bytes(b"first\nlast")
+    (repo / "uncached same.txt").write_text("kept\n", encoding="utf-8")
+    (repo / "uncached edited.txt").write_text("a\nb\nc\n", encoding="utf-8")
     commit_all(repo, "initial")
+    with (repo / ".git" / "config").open("a", encoding="utf-8") as fh:
+        fh.write("[diff]\n\tsubmodule = log\n")  # must not hide gitlink changes
 
     (repo / "keep.txt").write_text("one\nTWO\nthree\nfour\n", encoding="utf-8")  # unstaged
     (repo / "gone.txt").unlink()
@@ -78,6 +82,10 @@ def worktree(tmp_path_factory: pytest.TempPathFactory, isolated_git: Path) -> Pa
     (repo / "noeol.txt").write_bytes(b"first\nlast\nmore")
     (repo / "staged.py").write_text("print('staged')\n", encoding="utf-8")
     git(repo, "add", "staged.py", "keep.txt")
+    git(repo, "rm", "-q", "--cached", "uncached same.txt", "uncached edited.txt")
+    (repo / "uncached edited.txt").write_text("a\nB\nc\nd\n", encoding="utf-8")
+    git(repo, "update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},sub")
+    (repo / "sub").mkdir()  # an unpopulated submodule checkout
     (repo / "keep.txt").write_text("one\nTWO\nthree\nfour\nfive\n", encoding="utf-8")
 
     (repo / "dir with space").mkdir()
@@ -127,6 +135,14 @@ def test_from_git_tracked_changes(worktree_diff: Diff) -> None:
     assert noeol.removed == 1
 
     assert files["staged.py"].status == "added"
+
+    # `git rm --cached`: still on disk, so judged by content, never deleted + added
+    assert "uncached same.txt" not in files
+    edited = files["uncached edited.txt"]
+    assert (edited.status, edited.added, edited.removed) == ("modified", [(2, "B"), (4, "d")], 1)
+
+    sub = files["sub"]
+    assert (sub.status, sub.added) == ("added", [(1, f"Subproject commit {'1' * 40}")])
     assert files["staged.py"].added == [(1, "print('staged')")]
 
 
@@ -353,3 +369,38 @@ def test_from_patch_tolerates_garbage() -> None:
     assert from_patch("not a diff\n@@ -1 +1 @@\n").files == []
     truncated = "--- a/f\n+++ b/f\n@@ -1,5 +1,5 @@\n-x\n+y\n"
     assert by_path(from_patch(truncated))["f"].added == [(1, "y")]
+
+
+@needs_git
+def test_from_git_ignores_repo_env_vars(
+    worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "elsewhere" / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "bogus-index"))
+    assert "keep.txt" in from_git(worktree, include_untracked=False).paths()
+
+
+@needs_git
+def test_from_git_unrelated_and_shallow_histories(tmp_path: Path, isolated_git: Path) -> None:
+    repo = init_repo(tmp_path / "hist")
+    stream = (
+        fast_import_commit("main", "base", {"shared.txt": "base\n"})
+        + fast_import_commit("feature", "mine", {"feature.txt": "mine\n"}, parent="refs/heads/main")
+        + fast_import_commit("main", "upstream", {"upstream.txt": "theirs\n"})
+        + fast_import_commit("orphan", "root", {"other.txt": "x\n"})
+    )
+    subprocess.run(["git", "fast-import", "--quiet"], cwd=repo, input=stream.encode(), check=True)
+    git(repo, "checkout", "-q", "-f", "feature")
+
+    # a full clone with unrelated histories: compare with the base commit itself
+    unrelated = from_git(repo, base="orphan", include_untracked=False)
+    assert sorted(unrelated.paths()) == ["feature.txt", "other.txt", "shared.txt"]
+
+    # a shallow clone whose boundary hides the merge base must not blame upstream changes on us
+    heads = subprocess.run(
+        ["git", "rev-parse", "main", "feature"], cwd=repo, capture_output=True, check=True
+    ).stdout.decode()
+    (repo / ".git" / "shallow").write_text(heads, encoding="utf-8")
+    with pytest.raises(GitError, match=r"clone is shallow.*fetch --deepen.*fetch-depth: 0"):
+        from_git(repo, base="main")

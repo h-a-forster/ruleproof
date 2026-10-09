@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import os
 import re
 import subprocess
@@ -22,6 +23,7 @@ _GIT_DIFF_OPTS = (
     "--no-ext-diff",
     "--no-textconv",
     "--no-relative",
+    "--submodule=short",  # diff.submodule=log|diff would hide gitlink changes
     "-M",
     "--src-prefix=a/",
     "--dst-prefix=b/",
@@ -30,6 +32,14 @@ _GIT_DIFF_OPTS = (
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _BINARY_RE = re.compile(r"^Binary files (.+) and (.+) differ$")
 _STATUS: dict[str, ChangeStatus] = {"A": "added", "D": "deleted"}  # M, T, U, X: modified
+_REPO_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+)
 _C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
 
 
@@ -37,7 +47,7 @@ _C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 3
 
 
 def _git(repo: Path, *args: str, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
-    env = dict(os.environ)
+    env = {k: v for k, v in os.environ.items() if k not in _REPO_ENV_VARS}  # use `repo` only
     env["GIT_OPTIONAL_LOCKS"] = "0"  # read-only: never contend for index.lock
     try:
         return subprocess.run(
@@ -102,7 +112,15 @@ def _base_tree(repo: Path, base: str) -> str:
     proc = _git(repo, "merge-base", commit, "HEAD")
     if proc.returncode == 0:
         return proc.stdout.decode().strip()
-    return commit  # unborn HEAD or unrelated histories: compare with base itself
+    shallow = _git(repo, "rev-parse", "--is-shallow-repository").stdout.strip() == b"true"
+    if shallow:
+        raise GitError(
+            f"no common ancestor of {base!r} and HEAD in {repo}: the clone is shallow, so "
+            "upstream changes would be reported as yours. Fetch more history with "
+            "`git fetch --deepen=100` (or `git fetch --unshallow`); in GitHub Actions set "
+            "`fetch-depth: 0` on actions/checkout"
+        )
+    return commit  # unborn HEAD or genuinely unrelated histories: compare with base itself
 
 
 def from_git(repo: Path, base: str = "HEAD", include_untracked: bool = True) -> Diff:
@@ -114,11 +132,16 @@ def from_git(repo: Path, base: str = "HEAD", include_untracked: bool = True) -> 
     ``base`` is a single ref. When it is not ``HEAD`` it is first resolved through
     ``git merge-base <base> HEAD``, so ``base="origin/main"`` shows what this branch changed
     (as a pull request would) and excludes commits that landed upstream since it forked.
-    Histories without a common ancestor fall back to comparing with ``base`` itself. In a
-    repository with no commits, ``HEAD`` compares against the empty tree.
+    Genuinely unrelated histories (no common ancestor in a full clone) fall back to comparing
+    with ``base`` itself; in a shallow clone a missing merge base is an error, because the
+    comparison would attribute upstream changes to this branch. In a repository with no
+    commits, ``HEAD`` compares against the empty tree.
 
-    Raises ``GitError`` when git is missing, ``repo`` is not a repository, or ``base`` is
-    unknown.
+    A path that is deleted from the index but still on disk (``git rm --cached``) is reported
+    by its content: unchanged if it equals the base, else ``modified``.
+
+    Raises ``GitError`` when git is missing, ``repo`` is not a repository, ``base`` is
+    unknown, or a shallow clone lacks the merge base.
     """
     root = repo_root(repo)
     tree = _base_tree(root, base)
@@ -150,10 +173,20 @@ def from_git(repo: Path, base: str = "HEAD", include_untracked: bool = True) -> 
         files.append(change)
 
     if include_untracked:
+        deleted = {f.path: f for f in files if f.status == "deleted"}
         out = _git_ok(root, "ls-files", "--others", "--exclude-standard", "-z")
         for raw in out.split(b"\0"):
-            if raw and not raw.endswith(b"/"):
-                files.append(_untracked(root, _decode(raw)))
+            if not raw or raw.endswith(b"/"):
+                continue
+            rel = _decode(raw)
+            gone = deleted.get(rel)
+            if gone is None:
+                files.append(_untracked(root, rel))
+                continue
+            files.remove(gone)  # untracked but still on disk: compare its content with base
+            kept = _against_base(root, tree, rel)
+            if kept is not None:
+                files.append(kept)
 
     files.sort(key=lambda f: f.path)
     return Diff(base=base, files=files)
@@ -176,6 +209,36 @@ def _parse_name_status(out: bytes) -> list[tuple[ChangeStatus, str, str | None]]
     return result
 
 
+def _against_base(root: Path, tree: str, rel: str) -> FileChange | None:
+    """``rel`` (on disk) compared with its blob in ``tree``; None when identical."""
+    old = _git_ok(root, "cat-file", "blob", f"{tree}:{rel}")
+    try:
+        new = (root / rel).read_bytes()
+    except OSError:
+        return FileChange(path=rel, status="modified", binary=True)
+    if old == new:
+        return None
+    change = FileChange(path=rel, status="modified")
+    sniff = _BINARY_SNIFF_BYTES
+    if b"\0" in old[:sniff] or b"\0" in new[:sniff] or len(new) > UNTRACKED_MAX_BYTES:
+        change.binary = True
+        return change
+    a, b = _lines(old), _lines(new)
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag in ("replace", "delete"):
+            change.removed += i2 - i1
+        if tag in ("replace", "insert"):
+            change.added.extend((j + 1, b[j]) for j in range(j1, j2))
+    return change
+
+
+def _lines(data: bytes) -> list[str]:
+    lines = _decode(data).split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line.removesuffix("\r") for line in lines]
+
+
 def _untracked(root: Path, rel: str) -> FileChange:
     change = FileChange(path=rel, status="added")
     full = root / rel
@@ -193,11 +256,7 @@ def _untracked(root: Path, rel: str) -> FileChange:
     if b"\0" in data[:_BINARY_SNIFF_BYTES]:
         change.binary = True
         return change
-    text = _decode(data)
-    lines = text.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-    change.added = [(n, line.removesuffix("\r")) for n, line in enumerate(lines, 1)]
+    change.added = list(enumerate(_lines(data), 1))
     return change
 
 
