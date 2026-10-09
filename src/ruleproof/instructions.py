@@ -70,9 +70,6 @@ def find_instruction_files(repo: Path, max_depth: int = 8) -> list[Path]:
         for name in filenames:
             if name in INSTRUCTION_NAMES:
                 found.add(here / name)
-    claude_dir = repo / ".claude" / "CLAUDE.md"
-    if claude_dir.is_file():
-        found.add(claude_dir)
 
     def key(p: Path) -> tuple[int, str]:
         rel = p.relative_to(repo).as_posix()
