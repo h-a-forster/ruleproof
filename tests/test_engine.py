@@ -170,3 +170,17 @@ def test_find_instruction_files_skips_gitignored(tmp_path: Path) -> None:
         p.write_text("x", encoding="utf-8")
     found = find_instruction_files(tmp_path)
     assert [p.relative_to(tmp_path).as_posix() for p in found] == ["AGENTS.md"]
+
+
+def test_find_instruction_files_keeps_tracked_files_matching_ignore(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("*.md\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "AGENTS.md"], cwd=tmp_path, check=True)
+    found = find_instruction_files(tmp_path)
+    assert [p.relative_to(tmp_path).as_posix() for p in found] == ["AGENTS.md"]

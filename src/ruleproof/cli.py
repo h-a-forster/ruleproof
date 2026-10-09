@@ -538,10 +538,18 @@ def _write_stdout(text: str) -> None:
 
 
 def _make_stdout_lossless() -> None:
-    """Never crash on characters the console encoding (e.g. cp1252) cannot represent."""
+    """Never crash on characters the stream encoding (e.g. cp1252) cannot represent.
+
+    Redirected output is written as UTF-8 so JSON and timelines survive a pipe on Windows,
+    where Python otherwise uses the ANSI code page.
+    """
     for stream in (sys.stdout, sys.stderr):
-        if isinstance(stream, io.TextIOWrapper) and stream.errors == "strict":
+        if not isinstance(stream, io.TextIOWrapper):
+            continue
+        if stream.isatty():
             stream.reconfigure(errors="replace")
+        else:
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _can_encode(stream: TextIO, chars: str) -> bool:

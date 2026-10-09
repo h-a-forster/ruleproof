@@ -355,14 +355,28 @@ def test_color_on_tty(
 def test_ascii_fallback_when_stdout_cannot_encode(
     fk: Fakes, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    class Console(io.TextIOWrapper):  # a terminal whose code page lacks the symbols
+        def isatty(self) -> bool:
+            return True
+
     buf = io.BytesIO()
-    stream = io.TextIOWrapper(buf, encoding="ascii")
+    stream = Console(buf, encoding="ascii")
     monkeypatch.setattr("sys.stdout", stream)
     fk.results = [result("a", "fail"), result("b", "pass")]
     assert cli.main(["check"]) == 1
     stream.flush()
     out = buf.getvalue().decode("ascii")
     assert "x a  s" in out and "+ b  s" in out
+
+
+def test_redirected_output_is_utf8(fk: Fakes, monkeypatch: pytest.MonkeyPatch) -> None:
+    buf = io.BytesIO()
+    stream = io.TextIOWrapper(buf, encoding="cp1252")
+    monkeypatch.setattr("sys.stdout", stream)
+    fk.results = [result("a", "fail")]
+    assert cli.main(["check"]) == 1
+    stream.flush()
+    buf.getvalue().decode("utf-8")
 
 
 # --------------------------------------------------------------------------- compile

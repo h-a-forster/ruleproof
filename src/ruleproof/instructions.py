@@ -102,7 +102,7 @@ def git_ignored(repo: Path, rel_paths: Iterable[str]) -> set[str]:
         return set()
     try:
         proc = subprocess.run(
-            ["git", "check-ignore", "--no-index", "-z", "--stdin"],
+            ["git", "check-ignore", "-z", "--stdin"],
             cwd=repo,
             input="\0".join(paths).encode("utf-8"),
             capture_output=True,
