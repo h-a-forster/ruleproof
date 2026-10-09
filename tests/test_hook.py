@@ -165,14 +165,31 @@ def test_bad_stdin_is_silent(h: Harness, stdin: str) -> None:
     assert err.startswith("ruleproof hook: ") and err.count("\n") == 1
 
 
-def test_not_a_git_repo_is_silent(h: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_cwd_is_silent(h: Harness, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     def boom(path: Path) -> Path:
-        raise GitError("not a git repository: /somewhere")
+        raise GitError("not a directory")
 
     monkeypatch.setattr(h, "repo_root", boom)
-    code, out, err = h.run(payload())
+    missing = tmp_path / "gone"
+    code, out, err = h.run(payload(cwd=str(missing)))
     assert (code, out) == (0, "")
-    assert err == "ruleproof hook: not a git repository: /somewhere\n"
+    assert err == f"ruleproof hook: cwd {missing} does not exist; nothing checked\n"
+
+
+def test_not_a_git_repo_still_runs_transcript_rules(
+    h: Harness, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def boom(path: Path) -> Path:
+        raise GitError("not a git repository")
+
+    monkeypatch.setattr(h, "repo_root", boom)
+    code, out, err = h.run(payload(cwd=str(tmp_path)))
+    assert code == 0 and json.loads(out)["decision"] == "block"
+    ctx = h.contexts[0]
+    assert ctx.diff is None and ctx.session is h.session and ctx.repo == tmp_path.resolve()
+    assert "from_git" not in h.calls
+    assert "not inside a git repository; diff rules skipped" in err
+    assert "--repo" not in err and "--patch" not in err
 
 
 def test_no_rules_is_silent(h: Harness) -> None:

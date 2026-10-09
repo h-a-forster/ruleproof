@@ -37,7 +37,14 @@ class _Painter:
         return f"{self.symbol(r.status)} {self(_BOLD, r.rule.id)}{sev}  {summary}"
 
 
-def render(report: Report, color: bool, *, quiet: bool = False, unicode: bool = True) -> str:
+def render(
+    report: Report,
+    color: bool,
+    *,
+    quiet: bool = False,
+    unicode: bool = True,
+    fail_on: str | None = None,
+) -> str:
     p = _Painter(color, unicode)
     groups = by_status(report)
     lines: list[str] = []
@@ -64,7 +71,7 @@ def render(report: Report, color: bool, *, quiet: bool = False, unicode: bool = 
     if lines:
         lines.append("")
     verdict: Status = "fail" if groups["fail"] else "unverified" if groups["unverified"] else "pass"
-    lines.append(p(_COLORS[verdict], tally(report)))
+    lines.append(p(_COLORS[verdict], tally(report, fail_on)))
     lines.extend(f"note: {one_line(n, 400)}" for n in report.notes)
     return "\n".join(lines) + "\n"
 

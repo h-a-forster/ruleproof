@@ -10,7 +10,7 @@ import re
 from typing import Literal
 
 from ruleproof.errors import ConfigError
-from ruleproof.models import Evidence, Report, RuleResult, Status
+from ruleproof.models import SEVERITIES, Evidence, Report, RuleResult, Status
 
 Format = Literal["text", "json", "markdown", "sarif"]
 FORMATS: tuple[Format, ...] = ("text", "json", "markdown", "sarif")
@@ -30,12 +30,17 @@ def render(
     *,
     quiet: bool = False,
     unicode: bool = True,
+    fail_on: str | None = None,
 ) -> str:
-    """Render ``report`` in format ``fmt``. ``quiet`` and ``unicode`` only affect text."""
+    """Render ``report`` in format ``fmt``.
+
+    ``quiet`` and ``unicode`` only affect text. ``fail_on`` (a severity, or None / "never")
+    lets text and Markdown say how many failures count towards the exit code.
+    """
     if fmt == "text":
         from ruleproof.report import text
 
-        return text.render(report, color, quiet=quiet, unicode=unicode)
+        return text.render(report, color, quiet=quiet, unicode=unicode, fail_on=fail_on)
     if fmt == "json":
         from ruleproof.report import json as json_report
 
@@ -43,7 +48,7 @@ def render(
     if fmt == "markdown":
         from ruleproof.report import markdown
 
-        return markdown.render(report, color)
+        return markdown.render(report, color, fail_on=fail_on)
     if fmt == "sarif":
         from ruleproof.report import sarif
 
@@ -70,7 +75,19 @@ def counts(report: Report) -> dict[str, int]:
     }
 
 
-def tally(report: Report) -> str:
+def failed_label(report: Report, fail_on: str | None = None) -> str:
+    """``"6 failed"``, or ``"6 failed (5 at or above error)"`` when ``fail_on`` excludes some."""
+    failed = [r for r in report.results if r.status == "fail"]
+    label = f"{len(failed)} failed"
+    for rank, severity in enumerate(SEVERITIES):
+        if severity == fail_on:
+            counted = sum(1 for r in failed if SEVERITIES.index(r.rule.severity) <= rank)
+            if counted != len(failed):
+                label += f" ({counted} at or above {fail_on})"
+    return label
+
+
+def tally(report: Report, fail_on: str | None = None) -> str:
     """``"5 rules: 1 failed, 0 unverified, 2 skipped, 2 passed"``; doctor counts findings."""
     c = counts(report)
     if report.kind == "doctor":
@@ -78,7 +95,7 @@ def tally(report: Report) -> str:
         return f"{c['total']} {noun}" if c["total"] else "no findings"
     noun = "rule" if c["total"] == 1 else "rules"
     return (
-        f"{c['total']} {noun}: {c['failed']} failed, {c['unverified']} unverified, "
+        f"{c['total']} {noun}: {failed_label(report, fail_on)}, {c['unverified']} unverified, "
         f"{c['skipped']} skipped, {c['passed']} passed"
     )
 

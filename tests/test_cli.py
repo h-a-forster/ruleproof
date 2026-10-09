@@ -16,7 +16,7 @@ import pytest
 from ruleproof import __version__, cli
 from ruleproof.checks import CheckSpec, Param
 from ruleproof.errors import GitError
-from ruleproof.models import Context, Diff, Evidence, Rule, RuleResult, Session
+from ruleproof.models import Context, Diff, Event, EventKind, Evidence, Rule, RuleResult, Session
 
 
 def _patch(monkeypatch: pytest.MonkeyPatch, module: str, **attrs: Any) -> None:
@@ -171,6 +171,48 @@ def test_check_no_rules_is_config_error(fk: Fakes, capsys: pytest.CaptureFixture
     err = capsys.readouterr().err
     assert err.startswith("ruleproof: error: no rules found")
     assert "ruleproof compile" in err
+    assert "/blob/main/docs/rules.md" in err and "architecture" not in err
+
+
+def test_check_missing_rules_file_shows_absolute_path(
+    fk: Fakes, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["check", "--repo", str(tmp_path), "--rules", "nope.toml"]) == 2
+    err = capsys.readouterr().err
+    assert f"rules file not found: {tmp_path.resolve() / 'nope.toml'}" in err
+    assert "resolve against the current directory" in err
+    (tmp_path / "r.toml").write_text("", encoding="utf-8")
+    assert cli.main(["check", "--rules", "r.toml"]) == 0
+    assert fk.calls["load_rules"][1] == (tmp_path / "r.toml").resolve()
+
+
+def test_check_split_failed_count(fk: Fakes, capsys: pytest.CaptureFixture[str]) -> None:
+    fk.results = [result("a", "fail"), result("b", "fail", "warning")]
+    assert cli.main(["check"]) == 1
+    assert "2 rules: 2 failed (1 at or above error)," in capsys.readouterr().out
+    assert cli.main(["check", "--format", "markdown"]) == 1
+    assert "### ruleproof: 2 failed (1 at or above error)\n" in capsys.readouterr().out
+    assert cli.main(["check", "--format", "markdown", "--fail-on", "warning"]) == 1
+    assert "### ruleproof: 2 failed\n" in capsys.readouterr().out
+
+
+def test_check_anchors_relative_session_cwd(fk: Fakes, tmp_path: Path) -> None:
+    t = tmp_path / "t.jsonl"
+    t.write_text("{}\n", encoding="utf-8")
+    fk.session.cwd = "."
+    assert cli.main(["check", "--transcript", str(t)]) == 0
+    assert fk.calls["ctx"].session.cwd == str(tmp_path.resolve())
+    fk.session.cwd = "/abs/elsewhere"
+    cli.main(["check", "--transcript", str(t)])
+    assert fk.calls["ctx"].session.cwd == "/abs/elsewhere"
+
+
+def test_subcommand_help_documents_common_flags(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["timeline", "--help"]) == 0
+    out = capsys.readouterr().out
+    assert "less output" in out and "never use ANSI colors" in out and "sqlite" in out
+    assert cli.main(["hook", "claude-stop", "--help"]) == 0
+    assert "hook payload's cwd" in " ".join(capsys.readouterr().out.split())
 
 
 def test_check_notes_skipped_transcript_rules(
@@ -475,6 +517,23 @@ def test_timeline(
     assert capsys.readouterr().out == "timeline of sess-1\n"
     assert fk.calls["load_session"] == (t, "auto")
 
+    def not_git(path: Path) -> Path:
+        raise GitError("not a git repository")
+
+    monkeypatch.setattr(fk, "repo_root", not_git)
+    fk.session.cwd = str(tmp_path)
+    fk.session.events = [
+        Event(0, EventKind.EDIT, path=str(tmp_path / "src" / "deep" / "module.py")),
+        Event(1, EventKind.EDIT, path="/outside/the/repo.py"),
+    ]
+    _patch(
+        monkeypatch,
+        "ruleproof.transcripts.export",
+        render_text=lambda s: "\n".join(e.path or "" for e in s.events),
+    )
+    assert cli.main(["timeline", str(t)]) == 0
+    assert capsys.readouterr().out.splitlines() == ["src/deep/module.py", "/outside/the/repo.py"]
+
     assert cli.main(["timeline", "latest", "--format", "json"]) == 0
     assert fk.calls["resolve_session"][0] == "latest"
     assert json.loads(capsys.readouterr().out) == {"id": "x"}
@@ -507,7 +566,7 @@ def test_checks_lists_params_and_doctor(
     _patch(monkeypatch, "ruleproof.doctor", DOCTOR_CHECKS={"doctor/size": "large files"})
     assert cli.main(["checks"]) == 0
     out = capsys.readouterr().out
-    assert "forbid-thing  (needs diff or session)" in out
+    assert "forbid-thing  (needs diff or transcript)" in out
     assert "Fails when the thing happens." in out
     assert "paths: glob_list (required)  files to protect" in out
     assert "ignore_case: bool (default: false)" in out
@@ -579,3 +638,35 @@ def test_end_to_end_check_on_real_repo(
 
     (tmp_path / "x.bak").unlink()
     assert cli.main(["check", "--repo", str(tmp_path)]) == 0
+
+
+def test_compile_honours_exclude(
+    fk: Fakes, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "AGENTS.md").write_text("- Do X.\n", encoding="utf-8")
+    (tmp_path / "examples" / "demo").mkdir(parents=True)
+    (tmp_path / "examples" / "demo" / "AGENTS.md").write_text("- Do Y.\n", encoding="utf-8")
+    seen: dict[str, Any] = {}
+
+    @dataclass
+    class Config:
+        exclude: list[str]
+
+    def compile_files(paths: list[Path], repo: Path) -> str:
+        seen["paths"] = [p.relative_to(tmp_path).as_posix() for p in paths]
+        return "RESULT"
+
+    _patch(
+        monkeypatch,
+        "ruleproof.rules",
+        read_config=lambda repo, rules_file=None: Config(["examples/"]),
+    )
+    _patch(
+        monkeypatch,
+        "ruleproof.compile",
+        compile_files=compile_files,
+        render_toml=lambda r: "",
+        render_summary=lambda r: "",
+    )
+    assert cli.main(["compile", "--output", "-"]) == 0
+    assert seen["paths"] == ["AGENTS.md"]

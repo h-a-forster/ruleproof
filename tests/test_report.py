@@ -6,7 +6,16 @@ import pytest
 
 from ruleproof.errors import ConfigError
 from ruleproof.models import Evidence, Report, Rule, RuleResult, SessionInfo
-from ruleproof.report import FORMATS, PROJECT_URL, markdown, render, sarif, split_source, text
+from ruleproof.report import (
+    FORMATS,
+    PROJECT_URL,
+    failed_label,
+    markdown,
+    render,
+    sarif,
+    split_source,
+    text,
+)
 from ruleproof.report import json as json_report
 
 
@@ -337,3 +346,15 @@ def test_dispatcher_rejects_unknown_format() -> None:
 )
 def test_split_source(source: str | None, expected: tuple[str, int | None] | None) -> None:
     assert split_source(source) == expected
+
+
+def test_failed_label_splits_by_fail_on() -> None:
+    report = make_report()  # fails: no-bak (error), small-diff (warning)
+    assert failed_label(report) == "2 failed"
+    assert failed_label(report, "error") == "2 failed (1 at or above error)"
+    assert failed_label(report, "warning") == "2 failed"
+    assert failed_label(report, "never") == "2 failed"
+    assert "2 failed (1 at or above error)," in text.render(report, False, fail_on="error")
+    assert markdown.render(report, fail_on="error").startswith(
+        "### ruleproof: 2 failed (1 at or above error)\n"
+    )

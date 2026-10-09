@@ -84,7 +84,7 @@ def evaluate(
     from ruleproof import __version__
     from ruleproof.diff import from_git, repo_root
     from ruleproof.engine import run_rules
-    from ruleproof.errors import RuleproofError
+    from ruleproof.errors import GitError, RuleproofError
     from ruleproof.models import Context
     from ruleproof.rules import load_rules
 
@@ -97,8 +97,20 @@ def evaluate(
     cwd = payload.get("cwd")
     if not isinstance(cwd, str) or not cwd:
         raise _Skip("payload has no cwd; nothing checked")
+    in_git = True
     try:
         repo = repo_root(Path(cwd))
+    except GitError:
+        if not Path(cwd).is_dir():
+            raise _Skip(f"cwd {cwd} does not exist; nothing checked") from None
+        in_git = False
+        repo = Path(cwd).resolve()
+        print(
+            f"ruleproof hook: {cwd} is not inside a git repository; diff rules skipped, "
+            "transcript rules still run",
+            file=stderr,
+        )
+    try:
         rules_path = Path(cwd) / os.path.expanduser(rules_file) if rules_file else None
         rules = load_rules(repo, rules_file=rules_path)
     except RuleproofError as exc:
@@ -107,10 +119,11 @@ def evaluate(
         raise _Skip(f"no rules found for {repo}; nothing checked")
 
     diff = None
-    try:
-        diff = from_git(repo, base=base, include_untracked=True)
-    except RuleproofError as exc:
-        print(f"ruleproof hook: diff unavailable, diff rules skipped: {exc}", file=stderr)
+    if in_git:
+        try:
+            diff = from_git(repo, base=base, include_untracked=True)
+        except RuleproofError as exc:
+            print(f"ruleproof hook: diff unavailable, diff rules skipped: {exc}", file=stderr)
 
     session = _load_transcript(payload, stderr)
     results = run_rules(rules, Context(repo=repo, diff=diff, session=session))

@@ -11,24 +11,24 @@ import html
 import re
 
 from ruleproof.models import Report, RuleResult, Status
-from ruleproof.report import by_status, evidence_line, one_line, tally
+from ruleproof.report import by_status, evidence_line, failed_label, one_line, tally
 
 _MAX_EVIDENCE = 20
 _COLLAPSED: tuple[tuple[Status, str], ...] = (("skip", "skipped"), ("pass", "passed"))
 
 
-def render(report: Report, color: bool = False) -> str:
+def render(report: Report, color: bool = False, *, fail_on: str | None = None) -> str:
     groups = by_status(report)
     problems = groups["fail"] + groups["unverified"]
     title = "ruleproof doctor" if report.kind == "doctor" else "ruleproof"
     if groups["fail"]:
-        verdict = f"{len(groups['fail'])} failed"
+        verdict = failed_label(report, fail_on)
     elif groups["unverified"]:
         verdict = f"{len(groups['unverified'])} unverified"
     else:
         verdict = "all rules passed" if report.results else "no rules ran"
 
-    out: list[str] = [f"### {title}: {verdict}", "", tally(report), ""]
+    out: list[str] = [f"### {title}: {verdict}", "", tally(report, fail_on), ""]
 
     if problems:
         out += [

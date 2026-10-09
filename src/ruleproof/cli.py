@@ -15,7 +15,7 @@ import sys
 import traceback
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, TextIO, cast
 
 from ruleproof import __version__
@@ -29,6 +29,8 @@ AGENTS = ("auto", "claude-code", "codex", "gemini-cli", "generic")
 FAIL_ON = ("error", "warning", "info", "never")
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_INTERRUPTED = 0, 1, 2, 130
 
+RULES_DOC_URL = f"{PROJECT_URL}/blob/main/docs/rules.md"
+_INPUT_LABELS = {"diff": "diff", "session": "transcript"}
 _MAX_SESSION_WARNINGS = 3
 
 
@@ -77,8 +79,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Accept -q / --no-color after the subcommand too; SUPPRESS keeps the top-level value.
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("-q", "--quiet", action="store_true", default=argparse.SUPPRESS)
-    common.add_argument("--no-color", action="store_true", default=argparse.SUPPRESS)
+    common.add_argument(
+        "-q", "--quiet", action="store_true", default=argparse.SUPPRESS, help="less output"
+    )
+    common.add_argument(
+        "--no-color", action="store_true", default=argparse.SUPPRESS, help="never use ANSI colors"
+    )
 
     sub = parser.add_subparsers(title="commands", metavar="COMMAND")
 
@@ -88,7 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
         return p
 
     p = command("check", "check the diff and transcript against the rules", cmd_check)
-    p.add_argument("--rules", metavar="FILE", help="rules file (default: ruleproof.toml)")
+    p.add_argument(
+        "--rules",
+        metavar="FILE",
+        help="rules file; a relative path resolves against the current directory (default: "
+        "ruleproof.toml, .ruleproof.toml or [tool.ruleproof] in pyproject.toml)",
+    )
     p.add_argument("--repo", metavar="DIR", help="repository (default: current directory)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--base", metavar="REF", help="compare the working tree with REF (HEAD)")
@@ -104,7 +115,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = command("compile", "turn instruction files into ruleproof.toml", cmd_compile)
     p.add_argument("files", nargs="*", metavar="FILES", help="instruction files (default: all)")
-    p.add_argument("--output", metavar="FILE", help="where to write (default: ruleproof.toml)")
+    p.add_argument(
+        "--output", metavar="FILE", help="where to write ('-' = stdout; default: ruleproof.toml)"
+    )
     p.add_argument("--force", action="store_true", help="overwrite an existing file")
 
     p = command("doctor", "lint instruction and agent config files", cmd_doctor)
@@ -129,7 +142,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "session", metavar="SESSION", help="transcript path, session id prefix, or latest"
     )
-    p.add_argument("--format", choices=("text", "json", "sqlite"), default="text")
+    p.add_argument(
+        "--format",
+        choices=("text", "json", "sqlite"),
+        default="text",
+        help="text (one line per event), json, or sqlite (default: text)",
+    )
     p.add_argument("--output", metavar="FILE", help="write to FILE (required for sqlite)")
 
     command("checks", "list available checks and their parameters", cmd_checks)
@@ -144,9 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
         "finishing while rules fail. Always exits 0.",
         parents=[common],
     )
-    h.add_argument(
-        "--rules", metavar="FILE", help="rules file (relative paths resolve against the cwd)"
-    )
+    h.add_argument("--rules", metavar="FILE", help="rules file, relative to the hook payload's cwd")
     h.add_argument("--base", metavar="REF", default="HEAD", help="compare with REF (HEAD)")
     h.set_defaults(handler=cmd_hook_claude_stop)
     return parser
@@ -178,15 +194,17 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     no_git_ok = bool(args.patch or args.no_diff)
     repo = _resolve_repo(args.repo, allow_plain_dir=no_git_ok)
-    rules = load_rules(repo, rules_file=Path(args.rules) if args.rules else None)
+    rules = load_rules(repo, rules_file=_rules_path(args.rules))
     if not rules:
         raise ConfigError(
             f"no rules found in {repo}: run `ruleproof compile` to generate ruleproof.toml "
-            "from your instruction files, or write one (see docs/architecture.md)"
+            f"from your instruction files, or write one (see {RULES_DOC_URL})"
         )
 
     diff = _load_diff(args, repo)
     session = _load_check_session(args, repo)
+    if session is not None:
+        _anchor_cwd(session, repo)
     results = run_rules(rules, Context(repo=repo, diff=diff, session=session))
 
     notes: list[str] = []
@@ -219,6 +237,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 def cmd_compile(args: argparse.Namespace) -> int:
     from ruleproof.compile import compile_files, render_summary, render_toml
     from ruleproof.instructions import find_instruction_files
+    from ruleproof.rules import read_config
 
     repo = _resolve_repo(None, allow_plain_dir=True)
     if args.files:
@@ -227,7 +246,7 @@ def cmd_compile(args: argparse.Namespace) -> int:
         if missing:
             raise ConfigError(f"no such file: {', '.join(missing)}")
     else:
-        files = find_instruction_files(repo)
+        files = find_instruction_files(repo, exclude=read_config(repo).exclude)
         if not files:
             raise ConfigError(f"no instruction files (AGENTS.md, CLAUDE.md, ...) found in {repo}")
 
@@ -311,6 +330,8 @@ def cmd_timeline(args: argparse.Namespace) -> int:
     if args.format == "sqlite" and not args.output:
         raise ConfigError("--format sqlite needs --output FILE")
     session = _load_session_spec(args.session, agent="auto")
+    if args.format == "text":
+        _shorten_edit_paths(session)
     if args.format == "sqlite":
         write_sqlite([session], Path(args.output))
         if not args.quiet:
@@ -328,7 +349,8 @@ def cmd_checks(args: argparse.Namespace) -> int:
     out: list[str] = ["Checks (use in ruleproof.toml or <!-- ruleproof: CHECK key=value -->):", ""]
     for name, spec in sorted(load_all().items()):
         joiner = " or " if spec.needs_any else " and "
-        out.append(f"{name}  (needs {joiner.join(sorted(spec.needs))})")
+        needs = joiner.join(sorted(_INPUT_LABELS.get(n, n) for n in spec.needs))
+        out.append(f"{name}  (needs {needs})")
         if spec.doc and not args.quiet:
             out.append(f"    {' '.join(spec.doc.split())}")
         for pname, param in spec.params.items():
@@ -418,6 +440,50 @@ def _load_session_spec(spec: str, *, agent: str, repo: Path | None = None) -> Se
     return load_session(Path(ref.path), agent=ref.agent)
 
 
+def _rules_path(raw: str | None) -> Path | None:
+    """``--rules`` as an absolute path; relative paths resolve against the shell's cwd."""
+    if not raw:
+        return None
+    path = Path(raw).expanduser().resolve()
+    if not path.is_file():
+        hint = (
+            ""
+            if Path(raw).is_absolute()
+            else " (relative --rules paths resolve against the current directory, not --repo)"
+        )
+        raise ConfigError(f"rules file not found: {path}{hint}")
+    return path
+
+
+def _is_absolute(path: str) -> bool:
+    return PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute()
+
+
+def _anchor_cwd(session: Session, repo: Path) -> None:
+    """A relative ``session.cwd`` (e.g. ``"."`` in a generic transcript) means the repo."""
+    if session.cwd and not _is_absolute(session.cwd):
+        session.cwd = str((repo / session.cwd).resolve())
+
+
+def _shorten_edit_paths(session: Session) -> None:
+    """Show edit paths relative to the session's repo when they lie inside it."""
+    from ruleproof.diff import repo_root
+    from ruleproof.errors import GitError
+    from ruleproof.paths import relpath_in_repo
+
+    if not session.cwd or not _is_absolute(session.cwd) or not Path(session.cwd).is_dir():
+        return
+    try:
+        repo = repo_root(Path(session.cwd))
+    except GitError:
+        repo = Path(session.cwd)
+    for ev in session.edits():
+        if ev.path:
+            rel = relpath_in_repo(ev.path, repo, session.cwd)
+            if rel:
+                ev.path = rel
+
+
 def _session_warnings(session: Session) -> list[str]:
     w = session.warnings
     if not w:
@@ -438,7 +504,8 @@ def _emit_report(report: Report, args: argparse.Namespace) -> None:
     to_stdout = not args.output or args.output == "-"
     color = to_stdout and use_color(sys.stdout, no_color=args.no_color)
     unicode = not to_stdout or _can_encode(sys.stdout, SYMBOL_CHARS)
-    text = render(report, args.format, color, quiet=args.quiet, unicode=unicode)
+    fail_on = getattr(args, "fail_on", None)
+    text = render(report, args.format, color, quiet=args.quiet, unicode=unicode, fail_on=fail_on)
     _emit(text, args.output)
 
 
