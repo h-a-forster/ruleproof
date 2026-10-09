@@ -1,0 +1,11 @@
+{"type": "thread.started", "thread_id": "019c0000-0000-7000-8000-0000000e7ec0"}
+{"type": "turn.started"}
+{"type": "item.completed", "item": {"id": "item_0", "type": "reasoning", "text": "thinking"}}
+{"type": "item.started", "item": {"id": "item_1", "type": "command_execution", "command": "bash -lc 'pytest -q'", "aggregated_output": "", "exit_code": null, "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "item_1", "type": "command_execution", "command": "bash -lc 'pytest -q'", "aggregated_output": "2 passed", "exit_code": 0, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_2", "type": "file_change", "status": "completed", "changes": [{"path": "slug.py", "kind": "update"}, {"path": "new.py", "kind": "add"}]}}
+{"type": "item.completed", "item": {"id": "item_3", "type": "mcp_tool_call", "server": "docs", "tool": "search", "arguments": {"query": "slug"}, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_4", "type": "web_search", "query": "python slugify"}}
+{"type": "some.future_event", "payload": {}}
+{"type": "item.completed", "item": {"id": "item_5", "type": "agent_message", "text": "Done; 2 tests pass."}}
+{"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}

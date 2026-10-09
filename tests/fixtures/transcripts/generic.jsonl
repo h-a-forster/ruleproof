@@ -1,0 +1,9 @@
+{"session": {"agent": "my-agent", "id": "gen-001", "cwd": "/home/dev/demo", "started_at": "2026-04-05T06:07:08Z", "model": "local-model"}}
+{"kind": "user", "text": "Format the code.", "timestamp": "2026-04-05T06:07:09Z"}
+{"kind": "command", "text": "ruff format .", "exit_code": 0, "output": "2 files reformatted", "tool": "shell"}
+{"kind": "edit", "path": "src/a.py", "action": "modify", "index": 99}
+{"kind": "edit", "path": "src/b.py", "action": "rename"}
+{"kind": "tool", "tool": "web_fetch", "text": "https://example.invalid/docs", "is_error": false}
+{"kind": "command", "text": "pytest", "exit_code": "not-a-number", "actor": "helper"}
+{"kind": "mystery", "text": "skipped"}
+{"kind": "assistant", "text": "Formatted with ruff."}

@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","cwd":"/home/dev/demo","session_id":"stream-0001","model":"claude-test-2","tools":["Bash","Edit"]}
+{"type":"assistant","message":{"id":"m1","model":"claude-test-2","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest -q"}}]},"parent_tool_use_id":null,"session_id":"stream-0001"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"Exit code 2\nerror: no tests","is_error":true}]},"parent_tool_use_id":null,"session_id":"stream-0001"}
+{"type":"assistant","message":{"id":"m2","model":"claude-test-2","role":"assistant","content":[{"type":"tool_use","id":"t2","name":"MultiEdit","input":{"file_path":"/home/dev/demo/a.py","edits":[]}}]},"parent_tool_use_id":"toolu_parent","session_id":"stream-0001"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"ok"}]},"parent_tool_use_id":"toolu_parent","session_id":"stream-0001"}
+{"type":"assistant","message":{"id":"m3","model":"claude-test-2","role":"assistant","content":[{"type":"text","text":"Tests fail: no tests collected."}]},"parent_tool_use_id":null,"session_id":"stream-0001"}
+{"type":"result","subtype":"success","is_error":false,"result":"Tests fail: no tests collected.","session_id":"stream-0001"}
