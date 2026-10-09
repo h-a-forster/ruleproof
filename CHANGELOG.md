@@ -35,5 +35,5 @@ First release.
 - GitHub Action with job summary, SARIF output and transcript support; pre-commit hooks.
 - No runtime dependencies; Python 3.11+ on Linux, macOS and Windows.
 
-[Unreleased]: https://github.com/ruleproof/ruleproof/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/ruleproof/ruleproof/releases/tag/v0.1.0
+[Unreleased]: https://github.com/h-a-forster/ruleproof/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/h-a-forster/ruleproof/releases/tag/v0.1.0

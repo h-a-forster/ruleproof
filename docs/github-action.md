@@ -20,7 +20,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ruleproof/ruleproof@v0.1.0
+      - uses: h-a-forster/ruleproof@v0.1.0
 ```
 
 Use `fetch-depth: 0`. The action compares the base commit with the checked-out tree, so the base
@@ -74,7 +74,7 @@ Default `base`, by event:
           fetch-depth: 0
           persist-credentials: false
       - id: ruleproof
-        uses: ruleproof/ruleproof@v0.1.0
+        uses: h-a-forster/ruleproof@v0.1.0
         with:
           sarif: ${{ runner.temp }}/ruleproof.sarif
       - if: always() && steps.ruleproof.outputs.report != ''
@@ -113,7 +113,7 @@ to stream-json (one message per line) before passing it to ruleproof:
         run: jq -c '.[]' "$EXECUTION_FILE" > "$RUNNER_TEMP/claude-transcript.jsonl"
 
       - if: always() && steps.claude.outputs.execution_file != ''
-        uses: ruleproof/ruleproof@v0.1.0
+        uses: h-a-forster/ruleproof@v0.1.0
         with:
           base: ${{ steps.start.outputs.sha }}
           transcript: ${{ runner.temp }}/claude-transcript.jsonl
@@ -138,5 +138,5 @@ For Codex, use `codex exec --json > transcript.jsonl`.
 
 ## Pinning
 
-`uses: ruleproof/ruleproof@v0.1.0` pins a release. For a stronger pin, use the release's commit
+`uses: h-a-forster/ruleproof@v0.1.0` pins a release. For a stronger pin, use the release's commit
 SHA and let Dependabot (`package-ecosystem: github-actions`) update it.

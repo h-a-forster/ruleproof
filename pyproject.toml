@@ -27,6 +27,12 @@ classifiers = [
 ]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/h-a-forster/ruleproof"
+Documentation = "https://github.com/h-a-forster/ruleproof/tree/main/docs"
+Changelog = "https://github.com/h-a-forster/ruleproof/blob/main/CHANGELOG.md"
+Issues = "https://github.com/h-a-forster/ruleproof/issues"
+
 [project.scripts]
 ruleproof = "ruleproof.cli:main"
 

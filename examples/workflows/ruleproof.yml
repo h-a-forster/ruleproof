@@ -27,7 +27,7 @@ jobs:
 
       - name: ruleproof
         id: ruleproof
-        uses: ruleproof/ruleproof@v0.1.0
+        uses: h-a-forster/ruleproof@v0.1.0
         with:
           sarif: ${{ runner.temp }}/ruleproof.sarif
 

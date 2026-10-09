@@ -42,7 +42,7 @@ id = "no-runtime-deps"
 description = "Standard library only at runtime."
 source = "AGENTS.md:12"
 check = "forbid-text"
-pattern = '^dependencies\s*=\s*\[\s*[^\]\s]'
+pattern = '^dependencies\s*=\s*\[\s*([^\]\s]|$)'
 paths = ["/pyproject.toml"]
 
 [[rule]]

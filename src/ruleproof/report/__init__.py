@@ -15,7 +15,7 @@ from ruleproof.models import Evidence, Report, RuleResult, Status
 Format = Literal["text", "json", "markdown", "sarif"]
 FORMATS: tuple[Format, ...] = ("text", "json", "markdown", "sarif")
 
-PROJECT_URL = "https://github.com/ruleproof/ruleproof"
+PROJECT_URL = "https://github.com/h-a-forster/ruleproof"
 
 STATUS_ORDER: tuple[Status, ...] = ("fail", "unverified", "skip", "pass")
 

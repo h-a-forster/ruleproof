@@ -22,7 +22,7 @@ Security fixes go into the latest release.
 ## Reporting a vulnerability
 
 Report it privately through GitHub:
-[Security > Report a vulnerability](https://github.com/ruleproof/ruleproof/security/advisories/new).
+[Security > Report a vulnerability](https://github.com/h-a-forster/ruleproof/security/advisories/new).
 Do not open a public issue. Include the version, what you did, and what happened. Use synthetic
 data; do not send real transcripts.
 

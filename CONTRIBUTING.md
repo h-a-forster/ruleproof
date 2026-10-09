@@ -8,7 +8,7 @@ open an issue first so we can agree on the shape.
 You need [uv](https://docs.astral.sh/uv/) and git.
 
 ```sh
-git clone https://github.com/ruleproof/ruleproof
+git clone https://github.com/h-a-forster/ruleproof
 cd ruleproof
 uv sync                 # creates .venv with Python 3.11+ and the dev tools
 uv run ruleproof --help

@@ -49,7 +49,7 @@ jobs:
 
       - name: ruleproof
         if: always() && steps.claude.outputs.execution_file != ''
-        uses: ruleproof/ruleproof@v0.1.0
+        uses: h-a-forster/ruleproof@v0.1.0
         with:
           base: ${{ steps.start.outputs.sha }}
           transcript: ${{ runner.temp }}/claude-transcript.jsonl
