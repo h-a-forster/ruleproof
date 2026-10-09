@@ -148,9 +148,7 @@ class Report:
         rank = {s: i for i, s in enumerate(SEVERITIES)}
         bad: set[str] = {"fail", "unverified"} if strict else {"fail"}
         return [
-            r
-            for r in self.results
-            if r.status in bad and rank[r.rule.severity] <= rank[at_least]
+            r for r in self.results if r.status in bad and rank[r.rule.severity] <= rank[at_least]
         ]
 
 
