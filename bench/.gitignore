@@ -1,0 +1,2 @@
+# Per-trial workspaces, transcripts and session copies: never commit.
+workspaces/

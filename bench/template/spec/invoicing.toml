@@ -1,0 +1,22 @@
+# Source of truth for the tables in src/invoicing/generated/.
+# After editing, run: uv run python scripts/codegen.py
+
+[currencies.EUR]
+name = "Euro"
+symbol = "€"
+decimals = 2
+
+[currencies.GBP]
+name = "Pound sterling"
+symbol = "£"
+decimals = 2
+
+[currencies.USD]
+name = "US dollar"
+symbol = "$"
+decimals = 2
+
+[tax_rates]
+standard = "0.20"
+reduced = "0.07"
+zero = "0"
