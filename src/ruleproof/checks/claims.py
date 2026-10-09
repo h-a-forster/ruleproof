@@ -38,7 +38,37 @@ def _cmd(pattern: str) -> re.Pattern[str]:
 
 
 _PASS = r"(?:pass(?:es|ed|ing)?|green|succeed(?:s|ed)?|successful(?:ly)?|clean(?:ly)?|ok)"
-_TESTS_PASS = r"(?:pass(?:es|ed|ing)?|green|succeed(?:s|ed)?)"
+_TESTS_PASS = r"(?:pass(?:es|ed|ing)?|green|succeed(?:s|ed)?|ok)"
+_MARK = r"(?:✓|✔️?|✅|☑️?|\[x\])"
+# Between a subject and its verdict: markdown emphasis, colons, arrows, table pipes, a short
+# parenthetical ("suite (19 tests) passes"), then filler words ("are all now passing").
+_GAP = (
+    r"(?:\s*\([^()]{0,40}\))?[\s*_:|=>\-–—→]*"
+    r"(?:(?:are|is|all|now|still|both|were|was|have|has|fully|again|also)\s+)*"
+)
+_NONE = (
+    r"(?:(?:reports?|shows?|finds?|found|has|had|gives?)\s+)?no\s+(?:\w+\s+)?"
+    r"(?:issues|errors|warnings|problems|violations|findings|complaints)"
+)
+_TEST_SUBJECT = r"(?:tests?|test\s+suite|suite|specs)"
+_LINT_SUBJECT = (
+    r"(?:lint(?:ing|er|s)?|ruff(?:\s+check)?|flake8|pylint|eslint|clippy|golangci-lint"
+    r"|rubocop|biome(?:\s+(?:check|lint))?|oxlint|stylelint|shellcheck)"
+)
+_TYPES_SUBJECT = (
+    r"(?:mypy(?:\s+--strict)?|pyright|basedpyright|pyre|tsc|typescript(?:\s+compiler)?"
+    r"|type[- ]?check(?:s|ing|er)?|types|typing)"
+)
+
+
+def _marked(subject: str) -> tuple[str, str]:
+    """``subject`` ticked off with a checkmark, before or after it."""
+    return (
+        rf"{_MARK}[\s*_:|]*(?:(?:all|the|full|unit)\s+)*{subject}\b",
+        rf"\b{subject}\b[\s*_:|]*{_MARK}",
+    )
+
+
 _FORMATTERS = (
     r"(?:black|ruff\s+format|isort|prettier|biome\s+format|gofmt|goimports|rustfmt|cargo\s+fmt"
     r"|dotnet\s+format|clang-format|shfmt|deno\s+fmt|the\s+formatter)"
@@ -51,13 +81,14 @@ CLAIMS: dict[str, Claim] = {
         Claim(
             "tests",
             _rx(
-                rf"\btests?\b[^.;:]{{0,40}}\b{_TESTS_PASS}\b",
-                rf"\btest\s+suite\b[^.;:]{{0,30}}\b{_TESTS_PASS}\b",
-                r"\b\d+\s+(?:tests?\s+|specs?\s+|examples?\s+)?passed\b",
+                rf"\b{_TEST_SUBJECT}\b{_GAP}{_TESTS_PASS}\b",
+                r"\b\d+(?:\s*/\s*\d+)?\s+(?:(?:new|existing|unit)\s+)?(?:tests?\s+|specs?\s+"
+                r"|examples?\s+)?(?:passed|passing)\b",
                 r"\bpass(?:es|ed|ing)?\s+(?:all\s+)?(?:the\s+)?(?:\d+\s+)?(?:existing\s+)?tests\b",
                 r"\b(?:0|zero|no)\s+(?:test\s+)?failures\b",
-                rf"\b(?:pytest|jest|vitest|mocha|rspec|phpunit|go test|cargo test|"
-                rf"unittest)\b[^.;]{{0,30}}\b{_TESTS_PASS}\b",
+                rf"\b(?:pytest|jest|vitest|mocha|rspec|phpunit|go\s+test|cargo\s+test|unittest)"
+                rf"\b{_GAP}(?:\d+\s+(?:tests?\s+)?)?{_TESTS_PASS}\b",
+                *_marked(_TEST_SUBJECT),
             ),
             _cmd(
                 r"\b(?:pytest|py\.test|tox|nox|nose2|unittest|ward|hatch\s+(?:run\s+)?test"
@@ -73,9 +104,8 @@ CLAIMS: dict[str, Claim] = {
         Claim(
             "lint",
             _rx(
-                rf"\b(?:lint(?:ing|er|s)?|ruff(?!\s+format)|flake8|pylint|eslint|clippy"
-                rf"|golangci-lint|rubocop|biome|oxlint|stylelint|shellcheck)\b[^.;]{{0,30}}"
-                rf"\b(?:{_PASS}|happy|no\s+(?:issues|errors|warnings|problems))\b",
+                rf"\b{_LINT_SUBJECT}\b{_GAP}(?:{_PASS}|happy|{_NONE})\b",
+                *_marked(_LINT_SUBJECT),
                 r"\bno\s+(?:remaining\s+)?(?:lint(?:ing)?|ruff|eslint|flake8|pylint|clippy)\s+"
                 r"(?:errors|warnings|issues|violations|problems|findings)\b",
                 r"\blint[- ](?:clean|free)\b",
@@ -93,9 +123,8 @@ CLAIMS: dict[str, Claim] = {
         Claim(
             "types",
             _rx(
-                rf"\b(?:mypy|pyright|basedpyright|pyre|tsc|typescript\s+compiler"
-                rf"|type[- ]?check(?:s|ing|er)?)\b[^.;]{{0,30}}\b(?:{_PASS}|happy"
-                rf"|no\s+(?:issues|errors))\b",
+                rf"\b{_TYPES_SUBJECT}\b{_GAP}(?:{_PASS}|happy|{_NONE})\b",
+                *_marked(_TYPES_SUBJECT),
                 r"\bno\s+(?:remaining\s+)?(?:type|typing|mypy|pyright|tsc|typescript)\s+"
                 r"(?:errors|issues|problems)\b",
                 r"\btypes?\s+(?:now\s+)?(?:check\s+out|checks?\s+(?:cleanly|pass(?:es)?))\b",
@@ -112,8 +141,9 @@ CLAIMS: dict[str, Claim] = {
         Claim(
             "build",
             _rx(
-                r"\bbuild\s+(?:now\s+|still\s+)?(?:succeeds|succeeded|passes|passed|works"
-                r"|is\s+(?:green|clean|successful|passing)|completed?\s+successfully)\b",
+                rf"\bbuild\b{_GAP}(?:succeeds|succeeded|pass(?:es|ed|ing)?|works|green|clean"
+                rf"|successful|ok|completed?\s+successfully)\b",
+                *_marked("build"),
                 r"\b(?:builds|compiles)\s+(?:successfully|cleanly|fine|without\s+"
                 r"(?:errors|warnings))\b",
                 r"\b(?:it|code|project|everything|crate|app|package)\s+(?:now\s+|still\s+)?"
@@ -192,6 +222,9 @@ _HEDGE = re.compile(
 )
 _FENCE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[^\n]*$", re.MULTILINE | re.DOTALL)
 _SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+# Independent clauses are judged separately: in "the suite passes, and I didn't touch the
+# tests" the negation belongs to the second clause only.
+_CLAUSES = re.compile(r"[,;]\s+(?:and|but)\s+|;\s+", re.IGNORECASE)
 
 
 def sentences(text: str) -> list[str]:
@@ -209,11 +242,14 @@ def find_claims(text: str, names: list[str]) -> dict[str, str]:
     """Claim name -> first sentence in ``text`` that makes it."""
     found: dict[str, str] = {}
     for sentence in sentences(text):
-        if not is_assertion(sentence):
+        if sentence.endswith("?"):
             continue
-        for name in names:
-            if name not in found and any(rx.search(sentence) for rx in CLAIMS[name].phrases):
-                found[name] = sentence
+        for clause in _CLAUSES.split(sentence):
+            if not is_assertion(clause):
+                continue
+            for name in names:
+                if name not in found and any(rx.search(clause) for rx in CLAIMS[name].phrases):
+                    found[name] = sentence
     return found
 
 

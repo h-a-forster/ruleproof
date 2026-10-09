@@ -166,6 +166,35 @@ def test_forbid_change_unknown_edit_action(
     assert run(rule, Context(REPO, d, s)).status == status
 
 
+@pytest.mark.parametrize(
+    ("edit_actions", "diff_status", "actions", "status"),
+    [
+        # regression: a new test file written twice is an add, not a modify
+        (["add", "modify"], "added", ["modify", "delete"], "pass"),
+        (["add", "add"], "added", ["modify", "delete"], "pass"),
+        (["unknown", "unknown"], "added", ["modify", "delete"], "pass"),
+        (["add", "modify"], "added", ["add"], "fail"),
+        # a Write ("add") over a file that existed at base is a modify
+        (["add"], "modified", ["add"], "pass"),
+        (["add"], "modified", ["modify"], "fail"),
+        (["modify"], "deleted", ["modify"], "pass"),
+        # not in the diff (created then removed): the transcript's actions decide
+        (["add", "delete"], None, ["add"], "fail"),
+        (["add", "delete"], None, ["modify"], "pass"),
+    ],
+)
+def test_forbid_change_diff_base_state_decides(
+    edit_actions: list[EditAction],
+    diff_status: ChangeStatus | None,
+    actions: list[str],
+    status: str,
+) -> None:
+    s = edits(*[("C:/work/repo/tests/test_new.py", a) for a in edit_actions])
+    d = diff(fc("tests/test_new.py", diff_status)) if diff_status else diff()
+    rule = make_rule("forbid-change", paths=["tests/**"], actions=actions)
+    assert run(rule, Context(REPO, d, s)).status == status
+
+
 def test_forbid_change_scoped_rule() -> None:
     files = [fc("pkg/gen/a.py"), fc("gen/b.py"), fc("other/gen/c.py")]
     rule = make_rule("forbid-change", scope="pkg", paths=["gen/"])

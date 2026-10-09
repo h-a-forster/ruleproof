@@ -58,9 +58,10 @@ def _selected(rule: Rule, path: str, include: list[str] | None, exclude: list[st
         "Fails when a file matching `paths` was added, modified or deleted, according to the "
         "diff or to the agent's own edits in the transcript (so a file created and removed "
         "again is still caught). A rename counts as deleting the old path and adding the new "
-        "one. A transcript edit whose action is unknown counts as `add` or `delete` when the "
-        "diff shows the file added or deleted, else as `modify`. Edits outside the repo are "
-        "ignored; use forbid-edit for those. One finding per path."
+        "one. When the diff lists a path, the diff decides the action (every edit of a file "
+        "that is new since the base is an add); the transcript's action is used only for paths "
+        "the diff does not list, with an unknown action counting as `modify`. Edits outside "
+        "the repo are ignored; use forbid-edit for those. One finding per path."
     ),
 )
 def forbid_change(rule: Rule, ctx: Context) -> RuleResult:
@@ -79,15 +80,14 @@ def forbid_change(rule: Rule, ctx: Context) -> RuleResult:
     if ctx.session is not None:
         for ev in ctx.session.edits():
             rel = edit_relpath(ev, ctx)
-            if rel is None or rel in found or not _selected(rule, rel, include, exclude):
+            # A path in the diff was judged above from its base state: a re-write of a file
+            # the diff shows as new is still an add, a Write over an existing file a modify.
+            if rel is None or rel in diff_actions or not _selected(rule, rel, include, exclude):
                 continue
-            action = str(ev.action)
-            if action not in _ACTIONS:  # "unknown" or not recorded
-                in_diff = diff_actions.get(rel)
-                action = in_diff if in_diff in ("add", "delete") else "modify"
-            if action in actions:
+            done = ev.action if ev.action and ev.action != "unknown" else "modify"
+            if rel not in found and done in actions:
                 found[rel] = Evidence(
-                    f"agent {_PAST[action]} {rel} (event #{ev.index})", path=rel, event=ev.index
+                    f"agent {_PAST[done]} {rel} (event #{ev.index})", path=rel, event=ev.index
                 )
     if not found:
         return RuleResult(rule, "pass", "no forbidden file changed")
