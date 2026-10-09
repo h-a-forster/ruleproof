@@ -62,8 +62,8 @@ inputs:
 outputs:
   failed:
     description: >-
-      Number of failing results (check + doctor) at or above `fail-on` (unverified included
-      with `strict`). With `fail-on: never`, every failing result is counted.
+      Number of failing results (check + doctor) at or above `fail-on`; `unverified` counts
+      with `strict`. With `fail-on: never`, every failing result is counted.
     value: ${{ steps.result.outputs.failed }}
   report:
     description: Path to the JSON report of `ruleproof check`.
@@ -75,6 +75,29 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        FAIL_ON: ${{ inputs.fail-on }}
+        STRICT: ${{ inputs.strict }}
+        DOCTOR: ${{ inputs.doctor }}
+        RULEPROOF_VERSION: ${{ inputs.version }}
+      run: |
+        bad=0
+        case "$FAIL_ON" in error|warning|info|never) ;; *)
+          echo "::error title=ruleproof::fail-on must be error, warning, info or never, not '$FAIL_ON'"; bad=1 ;;
+        esac
+        case "$STRICT" in true|false) ;; *)
+          echo "::error title=ruleproof::strict must be true or false, not '$STRICT'"; bad=1 ;;
+        esac
+        case "$DOCTOR" in true|false) ;; *)
+          echo "::error title=ruleproof::doctor must be true or false, not '$DOCTOR'"; bad=1 ;;
+        esac
+        if [[ -n "$RULEPROOF_VERSION" && ! "$RULEPROOF_VERSION" =~ ^[0-9A-Za-z.+!-]+$ ]]; then
+          echo "::error title=ruleproof::version must be a version number such as 0.1.0, not '$RULEPROOF_VERSION'"; bad=1
+        fi
+        exit "$bad"
+
     - name: Set up Python for ruleproof
       id: python
       uses: actions/setup-python@v7
@@ -90,10 +113,6 @@ runs:
         RULEPROOF_VERSION: ${{ inputs.version }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
-        if [[ -n "$RULEPROOF_VERSION" && ! "$RULEPROOF_VERSION" =~ ^[0-9A-Za-z.+!-]+$ ]]; then
-          echo "::error title=ruleproof::invalid version input: $RULEPROOF_VERSION"
-          exit 2
-        fi
         venv="$RUNNER_TEMP/ruleproof-venv"
         "$PY" -m venv "$venv"
         if [[ -x "$venv/bin/python" ]]; then
@@ -198,6 +217,10 @@ runs:
         fi
         rc=0
         "$RULEPROOF_PY" -m ruleproof "${args[@]}" --format text --fail-on "$FAIL_ON" || rc=$?
+        if [[ $rc -ge 2 ]]; then
+          echo "::error title=ruleproof::ruleproof exited with $rc (usage or configuration error)"
+          exit "$rc"
+        fi
         echo "exit=$rc" >> "$GITHUB_OUTPUT"
 
     - name: ruleproof doctor
@@ -222,6 +245,10 @@ runs:
         "$RULEPROOF_PY" -m ruleproof doctor --format markdown --fail-on never >> "$GITHUB_STEP_SUMMARY"
         rc=0
         "$RULEPROOF_PY" -m ruleproof doctor --format text --fail-on "$FAIL_ON" || rc=$?
+        if [[ $rc -ge 2 ]]; then
+          echo "::error title=ruleproof::ruleproof exited with $rc (usage or configuration error)"
+          exit "$rc"
+        fi
         echo "exit=$rc" >> "$GITHUB_OUTPUT"
 
     - name: Result
@@ -236,9 +263,16 @@ runs:
         FAIL_ON: ${{ inputs.fail-on }}
         STRICT: ${{ inputs.strict }}
       run: |
-        failed="$("$RULEPROOF_PY" "$GITHUB_ACTION_PATH/.github/scripts/count_failed.py" "$FAIL_ON" "$STRICT" "$CHECK_REPORT" "$DOCTOR_REPORT")"
-        echo "failed=$failed" >> "$GITHUB_OUTPUT"
-        if [[ "${CHECK_EXIT:-0}" -ne 0 || "${DOCTOR_EXIT:-0}" -ne 0 ]]; then
-          echo "::error title=ruleproof::$failed rule(s) failed. See the job summary."
+        rc=0
+        counts="$("$RULEPROOF_PY" "$GITHUB_ACTION_PATH/.github/scripts/count_failed.py" "$FAIL_ON" "$STRICT" "$CHECK_REPORT" "$DOCTOR_REPORT")" || rc=$?
+        if [[ $rc -ne 0 ]]; then
+          echo "$counts"
           exit 1
         fi
+        read -r at_level total <<< "$counts"
+        echo "failed=$at_level" >> "$GITHUB_OUTPUT"
+        if [[ "${CHECK_EXIT:-0}" -ne 0 || "${DOCTOR_EXIT:-0}" -ne 0 ]]; then
+          echo "::error title=ruleproof::$at_level rule(s) failed at or above $FAIL_ON ($total failed in total). See the job summary."
+          exit 1
+        fi
+        echo "ruleproof: $at_level rule(s) failed at or above $FAIL_ON ($total failed in total)."

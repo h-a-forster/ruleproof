@@ -57,6 +57,7 @@ source = "AGENTS.md:31"
 check = "forbid-text"
 pattern = '''(api[_-]?key|secret|passw(or)?d|token)\s*[:=]\s*["'][^"'\s]{12,}["']|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----'''
 ignore_case = true
+redact = true
 except = ["tests/**", "*.md"]
 
 # --- Transcript rules: need the agent's session (local session, Stop hook, or CI transcript) ---

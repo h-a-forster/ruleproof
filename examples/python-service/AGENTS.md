@@ -20,7 +20,7 @@ SQLAlchemy, Alembic. Dependencies are managed with uv.
   <!-- ruleproof: forbid-command id=no-destructive-git command="git\s+(push\s+.*(--force|-f)\b|reset\s+--hard|clean\s+-\w*f)" -->
 - The client in `orders/clients/payments/` is generated from the OpenAPI spec. Never edit it
   by hand; regenerate it with `uv run python -m tools.gen_payments`.
-  <!-- ruleproof: forbid-change paths=orders/clients/payments/ except=orders/clients/payments/README.md -->
+  <!-- ruleproof: forbid-change id=generated-payments-client description="Never edit the generated payments client by hand; regenerate it." paths=orders/clients/payments/ except=orders/clients/payments/README.md -->
 - Never edit an applied migration. Add a new one with `uv run alembic revision`.
   <!-- ruleproof: forbid-change id=migrations-append-only paths=migrations/versions/*.py actions=modify,delete -->
 - Don't create `.bak`, `.orig` or `*_old.py` copies; use git.

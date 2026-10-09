@@ -6,9 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0] - Unreleased
-
-First release.
+First release (0.1.0).
 
 ### Added
 
@@ -19,6 +17,7 @@ First release.
   `<!-- ruleproof: ... -->` annotations in instruction files, with `file:line` load errors.
 - Checks: `forbid-change`, `require-change`, `forbid-text`, `require-text`, `max-diff`,
   `forbid-command`, `require-command`, `forbid-edit`, `forbid-tool`, `forbid-message`, `claims`.
+  `forbid-text` can redact matches in reports (`redact = true`), for secret-detection rules.
 - `claims`: flags "tests pass", "lint is clean", "committed" and similar claims with no
   successful command to back them.
 - Transcript parsers for Claude Code (session JSONL and `stream-json`), Codex CLI (rollout JSONL
@@ -31,9 +30,8 @@ First release.
   that disagree with the repo, dead references, oversized files, broken skills and MCP config
   drift.
 - `ruleproof hook claude-stop`: Claude Code Stop hook that blocks finishing while rules fail,
-  with loop protection.
+  with loop protection, `--rules` / `--base` options and a `RULEPROOF_HOOK_DISABLE` switch.
 - GitHub Action with job summary, SARIF output and transcript support; pre-commit hooks.
 - No runtime dependencies; Python 3.11+ on Linux, macOS and Windows.
 
-[Unreleased]: https://github.com/h-a-forster/ruleproof/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/h-a-forster/ruleproof/releases/tag/v0.1.0
+[Unreleased]: https://github.com/h-a-forster/ruleproof/commits/main

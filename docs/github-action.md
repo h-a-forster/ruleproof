@@ -34,14 +34,14 @@ Transcript rules are skipped unless you pass `transcript`: a CI run has no local
 | Input | Default | Meaning |
 | --- | --- | --- |
 | `base` | see below | Git ref to diff against. |
-| `rules` | discovery | Rules file. Default: `ruleproof.toml`, then `[tool.ruleproof]` in `pyproject.toml`, plus inline annotations. |
+| `rules` | `ruleproof.toml`, `.ruleproof.toml` or `[tool.ruleproof]` in pyproject.toml, plus inline annotations | Rules file to use instead. |
 | `transcript` | none | Path to an agent transcript. Empty: `--no-transcript`. |
 | `agent` | `auto` | Transcript format: `auto`, `claude-code`, `codex`, `gemini-cli`, `generic`. |
-| `fail-on` | `error` | Lowest severity that fails the job: `error`, `warning`, `info`, `never`. |
-| `strict` | `false` | Count `unverified` results as failures. |
+| `fail-on` | `error` | Lowest severity that fails the job: `error`, `warning`, `info`, `never`. Any other value fails the job. |
+| `strict` | `false` | `true` counts `unverified` results as failures. |
 | `doctor` | `true` | Also run `ruleproof doctor`. Its findings use the same `fail-on`. |
 | `sarif` | none | Also write a SARIF report to this path. |
-| `version` | action ref | ruleproof version from PyPI, e.g. `0.1.0`. Empty: install from the action's own checkout, so the code matches the ref in `uses:`. |
+| `version` | empty (install from the action's checkout) | ruleproof version from PyPI, e.g. `0.1.0`. Empty installs the code at the ref in `uses:`. |
 | `python-version` | `3.13` | Python used to run ruleproof (3.11+). |
 | `working-directory` | `.` | Repository to check. `rules`, `transcript` and `sarif` paths are relative to it. |
 
@@ -61,6 +61,9 @@ Default `base`, by event:
 | `failed` | Number of results that fail the run (check + doctor), at or above `fail-on`; `unverified` included with `strict`. With `fail-on: never`, every failing result is counted. |
 | `report` | Path to the JSON report of `ruleproof check`. |
 | `doctor-report` | Path to the JSON report of `ruleproof doctor`, when it ran. |
+
+When rules fail, the job fails with
+`N rule(s) failed at or above <fail-on> (M failed in total)`.
 
 ## Code scanning (SARIF)
 
@@ -133,8 +136,9 @@ For Codex, use `codex exec --json > transcript.jsonl`.
 - ruleproof is installed into its own virtual environment under `$RUNNER_TEMP`. The action does
   not change `PATH` or the Python used by later steps.
 - The action needs only `contents: read` (plus `security-events: write` to upload SARIF).
-- Nothing is sent over the network except the package install. Transcripts can contain secrets:
-  do not upload them as artifacts unless you need to.
+- Nothing is sent over the network except the package install and, on a shallow clone, a
+  `git fetch` of the base commit.
+- Transcripts can contain secrets: do not upload them as artifacts unless you need to.
 
 ## Pinning
 

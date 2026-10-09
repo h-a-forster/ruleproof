@@ -71,12 +71,19 @@ defined in this repo's `.pre-commit-hooks.yaml` in a test project to try them.
 2. Never raise on a bad line: skip it and append to `Session.warnings`.
 3. Teach `--agent auto` to recognise the format and, if the agent stores sessions on disk,
    teach `discover.py` where to find them for a repo.
-4. Test with small synthetic fixtures under `tests/fixtures/<agent>/` that cover each event
+4. Test with small synthetic fixtures under `tests/fixtures/transcripts/` that cover each event
    kind, a failed command, and a malformed line.
 5. Document the format in `docs/architecture.md` and `CHANGELOG.md`.
 
 ## Releasing
 
-Maintainers: update `version` in `pyproject.toml` and the `CHANGELOG.md` section, merge, then
-push a tag `vX.Y.Z`. The release workflow checks the tag matches the version, publishes to PyPI
-with trusted publishing, and creates the GitHub release from the changelog section.
+Maintainers:
+
+1. Update `version` in `pyproject.toml`.
+2. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` with the release
+   date, add a new empty `## [Unreleased]` above it, and update the links at the bottom
+   (`[Unreleased]` compares `vX.Y.Z...HEAD`; add `[X.Y.Z]`).
+3. Merge, then push the tag `vX.Y.Z`.
+
+The release workflow checks that the tag matches the version, publishes to PyPI with trusted
+publishing, and creates the GitHub release from the changelog section.

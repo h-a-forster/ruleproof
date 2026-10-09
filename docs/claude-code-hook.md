@@ -1,8 +1,7 @@
 # Claude Code Stop hook
 
-`ruleproof hook claude-stop` checks Claude Code's work when it tries to finish. If a rule fails,
-Claude is told what failed and keeps working until it is fixed. It catches problems while the
-session is still open, before a reviewer or CI does.
+`ruleproof hook claude-stop` checks Claude Code's work when it tries to finish. If an error rule
+fails, Claude is told what failed and gets one more turn to fix it.
 
 ## What it does
 
@@ -17,6 +16,21 @@ Claude Code runs Stop hooks when the main agent finishes a response. The hook:
 4. otherwise prints nothing and Claude stops normally.
 
 It never blocks on `warning` or `info` rules, or on `unverified` or `skip` results.
+
+The hook always exits 0. If it cannot run (no rules, unreadable payload, an internal error), it
+prints a one-line diagnostic to stderr and lets Claude stop. In a directory that is not a git
+repository it skips the diff rules and still runs the transcript rules.
+
+## Options
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--rules FILE` | discovery | Rules file to use. A relative path resolves against the payload's `cwd`. The file may live outside the repo. |
+| `--base REF` | `HEAD` | Git ref the working tree is compared with. |
+
+```json
+"command": "ruleproof hook claude-stop --rules ~/.config/ruleproof/personal.toml --base origin/main"
+```
 
 ## Setup
 
@@ -70,14 +84,17 @@ for you, CI, or the next `ruleproof check`.
 
 ## Limits
 
-- The diff is uncommitted changes only. If Claude committed during the session, diff rules do
-  not see those commits; transcript rules still see the edits and commands.
+- By default the diff is uncommitted changes only. If Claude committed during the session, diff
+  rules do not see those commits unless you set `--base` (e.g. `--base origin/main`); transcript
+  rules still see the edits and commands.
 - Exit codes come from the transcript. Claude Code records failed shell commands as errors, so
   `require-command` and `claims` can tell a failing test run from a passing one.
 - The hook reads the local transcript file and runs git. It makes no network calls.
 
 ## Disable it
 
+- For one shell or session: set `RULEPROOF_HOOK_DISABLE=1` in the environment Claude Code
+  starts from. The hook then exits at once without checking.
 - For good: remove the `Stop` entry from the settings file. Claude Code cannot disable a single
   hook while keeping it configured.
 - For yourself only: register the hook in `.claude/settings.local.json` instead of the shared

@@ -19,5 +19,5 @@ ruleproof check --no-transcript           # diff rules against uncommitted chang
 ruleproof check --session latest          # add the latest local agent session
 ```
 
-See [docs/rules.md](../docs/rules.md), [docs/github-action.md](../docs/github-action.md) and
-[docs/claude-code-hook.md](../docs/claude-code-hook.md).
+See [docs/rules.md](../docs/rules.md), [docs/github-action.md](../docs/github-action.md),
+[docs/claude-code-hook.md](../docs/claude-code-hook.md) and [docs/integrations.md](../docs/integrations.md).
