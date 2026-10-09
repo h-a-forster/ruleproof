@@ -4,19 +4,23 @@ A rule turns one line of an instruction file into a check. ruleproof runs each r
 evidence it has: the **diff** (what changed in the repo) and the **transcript** (what the agent
 did and said). No model is called; the same inputs always give the same result.
 
-Rules come from three places, merged:
+Rules come from two places, used together:
 
-- `ruleproof.toml` at the repo root;
-- `[tool.ruleproof]` in `pyproject.toml` (same schema);
+- **one rules file**: the first that exists of `ruleproof.toml`, `.ruleproof.toml` and
+  `pyproject.toml` with a `[tool.ruleproof]` table (same schema), all at the repo root. Rules
+  files are never merged: if you have more than one, only the first is read;
 - inline annotations in instruction files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, ...).
 
-`ruleproof check --rules FILE` reads that file instead of `ruleproof.toml` / `pyproject.toml`.
+`ruleproof check --rules FILE` reads that file instead of looking for one. A rule id may be
+defined only once across the rules file and all annotations; a duplicate is a load error that
+cites both places.
 `ruleproof compile` drafts a `ruleproof.toml` from the prose in your instruction files.
 
 ## The rules file
 
 ```toml
 version = 1
+exclude = ["examples/", "tests/fixtures/"]  # optional
 
 [[rule]]
 id = "no-backup-files"
@@ -38,9 +42,22 @@ Rule fields:
 | `source` | no | Where the prose rule lives, e.g. `AGENTS.md:14`. Shown in reports. |
 | `scope` | no | Directory prefix. Diff checks only see files under it. |
 
-Every other key is a parameter of the check. An unknown check, an unknown parameter, a missing
-required parameter or a value of the wrong type is a load error that cites `file:line`, and
-`ruleproof` exits with code 2.
+Top-level keys: `version` (only `1`; optional), `exclude` (globs of files and directories
+that are not scanned for inline annotations, e.g. example projects and test fixtures that
+contain their own `AGENTS.md`) and the `[[rule]]` tables.
+
+Every other key in a rule is a parameter of the check. Rules are validated when they are
+loaded, never silently skipped later. A load error cites `file:line`, says what was expected
+and what was found, suggests the likely name for typos, and makes `ruleproof` exit with code 2.
+Load errors include:
+
+- an unknown check or parameter, a missing required parameter, a value of the wrong type;
+- a value that is not one of the allowed choices (e.g. `actions = ["added"]`; the allowed
+  values are listed per check below and by `ruleproof checks`);
+- an empty list where at least one value is needed, or none of a check's "set at least one
+  of" parameters set (e.g. `max-diff` without `max_files` or `max_lines`);
+- an invalid regex, an invalid glob (e.g. `[z-a]`, an unclosed `[`), or a regex that contains
+  a control character because a TOML basic string turned `"\b"` into a backspace.
 
 Regexes are Python `re` patterns, matched with `search` (anywhere in the text). In TOML, write
 them as literal strings (`'\bpytest\b'`) so backslashes need no escaping. Use `'''...'''` when
@@ -63,25 +80,36 @@ Syntax: `<!-- ruleproof: <check> key=value key="value with spaces" -->`.
 - Quote values that contain spaces.
 - List values are comma-separated: `paths=api/gen/,proto/*.pb.go`.
 - `id`, `severity` and `description` are optional.
-  - `id` defaults to `<file-stem>-L<line>`, e.g. `AGENTS-L18`.
-  - `description` defaults to the nearest prose line above the annotation.
+  - `id` defaults to the lowercased `<file-stem>-l<line>`, e.g. `agents-l18`; in a nested
+    file the directory is a prefix: `pkg/agents-l7`.
+  - `description` defaults to the paragraph or list item just above the annotation (or the
+    prose before it on the same line), without Markdown markup, capped at 200 characters.
   - `source` is always the annotation's file and line.
 - An annotation in a nested instruction file (`pkg/AGENTS.md`) gets `scope = "pkg"`: its diff
   checks only see files under `pkg/`.
+- Values are text: booleans are `true`/`false`/`yes`/`no`/`1`/`0`, integers are decimal.
+- The comment must start with `ruleproof:` (a comment like `<!-- ruleproof is configured in
+  ruleproof.toml -->` is ignored), and annotations inside code (fenced or indented code blocks
+  and inline code spans) are ignored, so documentation can show examples.
 
 ## Globs
 
 Path parameters (`paths`, `except`, `if_changed`, ...) take gitignore-style globs:
 
 - Paths are repo-relative and use `/`, on every OS: `src/app.py`.
-- A pattern without `/` matches the file name at any depth: `*.bak` matches `a/b/x.bak`.
-- A pattern with `/` is anchored at the repo root: `src/*.py` matches `src/a.py`, not
-  `src/sub/a.py` or `lib/src/a.py`.
+- A pattern matches a path and everything below it: `api/gen` matches `api/gen/x.go`.
+- A pattern without `/` (a trailing `/` does not count) matches at any depth: `*.bak` matches
+  `a/b/x.bak`; `examples` and `examples/` match `examples/demo/AGENTS.md` and
+  `pkg/examples/x.py`.
+- A pattern with `/` at the start or in the middle is anchored at the repo root: `src/*.py`
+  matches `src/a.py`, not `src/sub/a.py` or `lib/src/a.py`.
+- A leading `/` anchors a pattern at the root: `/pyproject.toml` matches only the root one.
 - `**` matches zero or more whole directories: `src/**/*.py` matches `src/a.py` and
   `src/x/y/a.py`.
 - `*` and `?` never cross `/`.
-- `[abc]` and `[!abc]` are character classes.
-- A trailing `/` matches everything below that directory: `vendor/` is `vendor/**`.
+- `[abc]`, `[a-z]` and `[!abc]` are character classes. To match a literal `*`, `?` or `[`, put
+  it in a class: `[*]`, `[?]`, `[[]`. Backslash is not an escape (it is a Windows path
+  separator). An unclosed `[` or a reversed range is a load error.
 - Matching is case-sensitive.
 
 Transcript paths are often absolute (`C:\work\repo\src\app.py`, `/c/work/repo/src/app.py`,
@@ -183,7 +211,8 @@ except = ["orders/cli.py"]
 
 ### require-text
 
-Fails when a file in scope lacks a matching added line.
+Fails when a file in scope has no match. Added files are checked against their content; with
+`new_files_only = false`, modified files are checked against their full content.
 
 | Parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -227,6 +256,7 @@ Fails when the agent ran a matching shell command. The command line is unwrapped
 | --- | --- | --- | --- |
 | `command` | regex | required | Commands that must not run. |
 | `ignore_case` | bool | `false` | Case-insensitive match. |
+| `match_quoted` | bool | `false` | Also match inside quoted strings and heredocs (commit messages, `echo` text). |
 
 ```toml
 [[rule]]
@@ -246,9 +276,10 @@ counted edit and exit 0. If it ran but the transcript has no exit code, the resu
 | `command` | regex | required | The command that must run. |
 | `must_succeed` | bool | `true` | Require exit code 0. |
 | `after_last_edit` | bool | `true` | Only count runs after the last counted edit. |
-| `when_paths` | globs | always | Apply the rule only when the agent edited a matching file; otherwise it passes. |
+| `when_paths` | globs | always | Apply the rule only when a changed (diff) or edited (transcript) file matches; otherwise it passes. |
 | `edit_paths` | globs | all | Edits that count for `after_last_edit`. |
 | `ignore_edit_paths` | globs | `[]` | Edits that do not count (docs, notes). |
+| `match_quoted` | bool | `false` | Also match inside quoted strings and heredocs (commit messages, `echo` text). |
 
 ```toml
 [[rule]]
@@ -303,6 +334,7 @@ Fails when an assistant message matches.
 | --- | --- | --- | --- |
 | `pattern` | regex | required | Text the agent must not say. |
 | `ignore_case` | bool | `false` | Case-insensitive match. |
+| `subagents` | bool | `false` | Also check subagents' messages; by default only the main agent's. |
 
 ```toml
 [[rule]]
@@ -322,7 +354,7 @@ run the tests"). For each claim it looks for an evidence command after the last 
 | Parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `claims` | list | all | Which claims to check (table below). |
-| `ignore_edit_paths` | globs | `[]` | Edits that do not count as "last edit". |
+| `ignore_edit_paths` | globs | `["*.md", "*.rst", "*.txt"]` | Edits that do not count as "last edit". |
 
 | Claim | Example phrases | Evidence |
 | --- | --- | --- |

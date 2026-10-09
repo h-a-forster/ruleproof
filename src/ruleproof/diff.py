@@ -88,10 +88,15 @@ def _base_tree(repo: Path, base: str) -> str:
     if commit is None:
         if base == "HEAD":  # unborn branch: everything in the index and work tree is new
             return _git_ok(repo, "hash-object", "-t", "tree", "--stdin", stdin=b"").decode().strip()
-        raise GitError(
-            f"unknown git ref {base!r} in {repo}; check the name, or fetch it first "
-            f"(e.g. `git fetch origin {base.removeprefix('origin/')}`)"
-        )
+        if re.fullmatch(r"(?:HEAD|@)(?:[~^]\d*)+", base):
+            raise GitError(
+                f"{base!r} does not exist in {repo}: the history is too short (shallow clone "
+                "or too few commits); fetch more with `git fetch --deepen=N` or use another base"
+            )
+        hint = ""
+        if re.fullmatch(r"[\w./-]+", base):
+            hint = f" (e.g. `git fetch origin {base.removeprefix('origin/')}`)"
+        raise GitError(f"unknown git ref {base!r} in {repo}; check the name, or fetch it{hint}")
     if base == "HEAD":
         return commit
     proc = _git(repo, "merge-base", commit, "HEAD")

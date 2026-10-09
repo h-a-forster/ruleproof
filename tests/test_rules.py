@@ -47,6 +47,18 @@ DEMO_CHECKS = {
             "names": Param("str_list", default=["a"]),
         },
     ),
+    "demo-strict": CheckSpec(
+        "demo-strict",
+        _noop,
+        frozenset({"diff"}),
+        {
+            "mode": Param("str", default="fast", choices=("fast", "slow")),
+            "actions": Param("str_list", default=["add"], choices=("add", "modify", "delete")),
+            "paths": Param("glob_list", default=None, nonempty=True),
+            "max_files": Param("int", default=None),
+        },
+        one_of=("paths", "max_files"),
+    ),
 }
 
 
@@ -271,7 +283,6 @@ def test_parse_inline_crlf() -> None:
     ("text", "message"),
     [
         ("\n<!-- ruleproof: demo-all x=1", r"^A.md:2: unterminated ruleproof annotation"),
-        ("<!-- ruleproof demo-all -->", r"^A.md:1: expected 'ruleproof:' followed by a check"),
         ("<!-- ruleproof: -->", r"^A.md:1: annotation has no check name"),
         ("<!-- ruleproof: a=b -->", r"^A.md:1: annotation has no check name"),
         ("<!-- ruleproof: c paths -->", r"^A.md:1: expected key=value .* found 'paths'"),
@@ -331,7 +342,7 @@ def test_validate_inline_ints_and_lists() -> None:
         (
             {"check": "demo-al"},
             r"x.toml:4: rule 'r1': unknown check 'demo-al' \(did you mean 'demo-all'\?\); "
-            r"available checks: demo-all, demo-paths",
+            r"available checks: demo-all, demo-paths, demo-strict",
         ),
         (
             {"params": {"pattern": "x", "patern": "y"}},
@@ -392,3 +403,107 @@ def test_exclude_skips_inline_annotations(tmp_path: Path) -> None:
 def test_exclude_must_be_list_of_strings() -> None:
     with pytest.raises(ConfigError, match="exclude must be a list"):
         parse_rules_toml("exclude = 3\n", "ruleproof.toml")
+
+
+# ------------------------------------------------------------------- review regressions
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Example:\n\n    <!-- ruleproof: nope x=1 -->\n",
+        "Example:\n\n\t<!-- ruleproof: nope x=1 -->\n",
+        "1. Example:\n\n    ```md\n    <!-- ruleproof: nope x=1 -->\n    ```\n",
+        "- Item\n\n      <!-- ruleproof: nope x=1 -->\n",
+        "<!-- ruleproof is configured in ruleproof.toml -->\n",
+        "<!-- ruleproofing notes -->\n",
+    ],
+)
+def test_parse_inline_ignores_indented_code_and_plain_comments(text: str) -> None:
+    assert parse_inline(text, "AGENTS.md") == []
+
+
+def test_parse_inline_list_continuation_is_not_code() -> None:
+    text = "1. Keep it.\n\n    <!-- ruleproof: demo-paths paths=a -->\n"
+    (r,) = parse_inline(text, "AGENTS.md")
+    assert (r.id, r.description) == ("agents-l3", "Keep it.")
+    indented = "Prose line\n    <!-- ruleproof: demo-paths paths=a -->\n"  # no blank: not code
+    assert len(parse_inline(indented, "AGENTS.md")) == 1
+
+
+def test_parse_inline_description_is_whole_paragraph() -> None:
+    text = (
+        "# Rules\n"
+        "\n"
+        "Intro paragraph.\n"
+        "\n"
+        "- Never edit `api/gen/` **by hand**;\n"
+        "  regenerate it with   `make gen`.\n"
+        "  <!-- ruleproof: demo-paths paths=api/gen/ -->\n"
+        "- Second item\n"
+        "  wraps here. <!-- ruleproof: demo-paths paths=b -->\n"
+        "## Heading only\n"
+        "<!-- ruleproof: demo-paths paths=c -->\n"
+        "\n" + "word " * 60 + "\n<!-- ruleproof: demo-paths paths=d -->\n"
+    )
+    first, second, third, fourth = parse_inline(text, "AGENTS.md")
+    assert first.description == "Never edit `api/gen/` by hand; regenerate it with `make gen`."
+    assert second.description == "Second item wraps here."
+    assert third.description == "Heading only"
+    assert len(fourth.description) <= 200
+    assert fourth.description.endswith("word...")
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        (
+            {"paths": ["x"], "mode": "fats"},
+            r"parameter 'mode': invalid value 'fats' \(did you "
+            r"mean 'fast'\?\); expected one of fast, slow",
+        ),
+        (
+            {"paths": ["x"], "actions": ["add", "added"]},
+            r"invalid value 'added' \(did you mean "
+            r"'add'\?\); expected one of add, modify, delete",
+        ),
+        ({"paths": []}, r"parameter 'paths': must not be empty"),
+        ({}, r"\(demo-strict\): set at least one of paths, max_files"),
+        (
+            {"paths": ["[z-a]"]},
+            r"x.toml:4: rule 'r1' \(demo-strict\): parameter 'paths': invalid "
+            r"glob pattern '\[z-a\]': reversed range z-a",
+        ),
+        ({"paths": ["[!]x"]}, r"unclosed character class"),
+    ],
+)
+def test_validate_choices_nonempty_one_of_globs(params: dict[str, object], message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        validate(rule(check="demo-strict", params=params))
+
+
+def test_validate_choices_and_one_of_accept_valid_values() -> None:
+    out = validate(rule(check="demo-strict", params={"max_files": 3, "actions": "modify"}))
+    assert out.params == {"mode": "fast", "actions": ["modify"], "paths": None, "max_files": 3}
+    (r,) = parse_inline("<!-- ruleproof: demo-strict paths=a mode=slow -->", "A.md")
+    assert validate(r).params["mode"] == "slow"
+
+
+def test_validate_rejects_control_characters_in_regexes() -> None:
+    basic = '[[rule]]\nid = "a"\ncheck = "demo-all"\npattern = "\\bfoo"\n'  # TOML: \b = BS
+    (r,) = parse_rules_toml(basic, "r.toml")
+    with pytest.raises(ConfigError) as exc:
+        validate(r)
+    assert str(exc.value).startswith(
+        "r.toml:1: rule 'a' (demo-all): parameter 'pattern': contains a control character "
+        "'\\x08' (\\b became a backspace?); use a TOML literal string"
+    )
+    with pytest.raises(ConfigError, match="control character"):
+        validate(rule(params={"pattern": "ok", "patterns": ["fine", "a\x0cb"]}))
+    literal = parse_rules_toml(basic.replace('"\\bfoo"', "'\\bfoo'"), "r.toml")
+    assert validate(literal[0]).params["pattern"] == "\\bfoo"
+
+
+def test_exclude_globs_are_validated() -> None:
+    with pytest.raises(ConfigError, match=r"^ruleproof.toml:2: invalid glob pattern '\[z-a\]'"):
+        parse_rules_toml('version = 1\nexclude = ["ok/", "[z-a]"]\n', "ruleproof.toml")

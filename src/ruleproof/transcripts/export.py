@@ -71,7 +71,7 @@ def _event_line(ev: Event, width: int) -> str:
     time = _clock(ev.timestamp)
     actor = "" if ev.actor == "main" else f"[{ev.actor}] "
     if ev.kind is EventKind.EDIT:
-        body = f"{ev.action or 'unknown'} {ev.path or ev.text}"
+        body = f"{ev.action or 'unknown'} {_middle(ev.path or ev.text, _TEXT_WIDTH - 10)}"
     elif ev.kind in (EventKind.TOOL, EventKind.COMMAND) and ev.tool:
         body = f"{ev.tool}: {ev.text}" if ev.kind is EventKind.TOOL else ev.text
     else:
@@ -83,6 +83,14 @@ def _event_line(ev: Event, width: int) -> str:
         suffix = "  [error]"
     text = one_line(body, _TEXT_WIDTH)
     return f"{ev.index:>{width}}  {time}  {actor}{ev.kind.value:<9} {text}{suffix}"
+
+
+def _middle(text: str, limit: int) -> str:
+    """Shorten from the middle so both the root and the file name stay visible."""
+    if len(text) <= limit:
+        return text
+    keep = max(limit - 3, 2)
+    return text[: keep // 2] + "..." + text[-(keep - keep // 2) :]
 
 
 def _clock(timestamp: str | None) -> str:

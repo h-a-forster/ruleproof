@@ -22,6 +22,7 @@ from ruleproof.instructions import (
     find_instruction_files,
 )
 from ruleproof.models import SEVERITIES, Rule
+from ruleproof.paths import GlobError, compile_glob
 
 RULES_FILES: tuple[str, ...] = ("ruleproof.toml", ".ruleproof.toml", "pyproject.toml")
 SUPPORTED_VERSION = 1
@@ -34,6 +35,8 @@ _PYPROJECT_HEADER_RE = re.compile(
     r'|^\s*\[\[\s*"?tool"?\s*\.\s*"?ruleproof"?\s*\.\s*"?rule"?\s*\]\]'
 )
 _TOML_LINE_RE = re.compile(r"at line (\d+)")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_CONTROL_HINTS = {"\b": " (\\b became a backspace?)", "\f": " (\\f became a form feed?)"}
 _LIST_TYPES = frozenset({"str_list", "glob_list", "regex_list"})
 _TYPE_EXPECTED = {
     "str": "a string",
@@ -193,6 +196,11 @@ def _config_from_table(
             f"{_at(origin, _key_line(text, 'exclude'))}: {prefix}exclude must be a list of "
             f'glob patterns, e.g. exclude = ["examples/", "tests/fixtures/"]'
         )
+    for pattern in exclude:
+        try:
+            compile_glob(pattern)
+        except GlobError as exc:
+            raise ConfigError(f"{_at(origin, _key_line(text, 'exclude'))}: {exc}") from None
     entries = table.get("rule", [])
     if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
         raise ConfigError(
@@ -250,11 +258,13 @@ def _at(origin: str, line: int | None) -> str:
 
 # ------------------------------------------------------------------------------- inline
 
-_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")  # any indent: fences nest in list items
 _CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`).+?(?<!`)\1(?!`)")
-_ANNOTATION_RE = re.compile(r"<!--\s*ruleproof\b")
+_ANNOTATION_RE = re.compile(r"<!--\s*ruleproof:")
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_DESCRIPTION_MAX = 200
 _KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
+_LIST_ITEM_RE = re.compile(r"^ *(?:[-*+]|\d{1,9}[.)])(?: +|$)")
 _LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?")
 _EMPHASIS_RES = (
     (re.compile(r"(\*\*|__|~~)(.+?)\1"), r"\2"),
@@ -266,9 +276,10 @@ _EMPHASIS_RES = (
 def parse_inline(text: str, rel_path: str) -> list[Rule]:
     """Rules from ``<!-- ruleproof: <check> key=value ... -->`` annotations in Markdown.
 
-    Annotations inside fenced code blocks and inline code spans are ignored. Values are kept
-    as written; ``validate`` converts them to each parameter's type (comma-separated lists,
-    ``true``/``false``/``yes``/``no``/``1``/``0`` booleans, decimal integers).
+    Annotations inside code (fenced blocks, indented blocks, inline spans) are ignored.
+    Values are kept as written; ``validate`` converts them to each parameter's type
+    (comma-separated lists, ``true``/``false``/``yes``/``no``/``1``/``0`` booleans, decimal
+    integers). The default description is the paragraph or list item just above.
     """
     masked = _mask_code(text)
     original_lines = text.split("\n")
@@ -284,18 +295,10 @@ def parse_inline(text: str, rel_path: str) -> list[Rule]:
         end = masked.find("-->", m.end())
         if end == -1:
             raise ConfigError(f"{where}: unterminated ruleproof annotation; close it with -->")
-        body = masked[m.end() : end]
-        if not body.lstrip().startswith(":"):
-            raise ConfigError(
-                f"{where}: expected 'ruleproof:' followed by a check name, as in "
-                "<!-- ruleproof: forbid-change paths=dist/ -->"
-            )
-        check, values = _parse_annotation_body(body.lstrip()[1:], where)
+        check, values = _parse_annotation_body(masked[m.end() : end], where)
         line_start = masked.rfind("\n", 0, m.start()) + 1
         same_line = original_lines[line - 1][: m.start() - line_start]
-        description = _prose(same_line) or _preceding_prose(
-            original_lines, masked_lines, comment_lines, line
-        )
+        description = _preceding_prose(original_lines, masked_lines, comment_lines, line, same_line)
         fields: dict[str, Any] = {
             "id": _default_id(rel_path, line),
             "description": description,
@@ -311,22 +314,50 @@ def parse_inline(text: str, rel_path: str) -> list[Rule]:
 
 
 def _mask_code(text: str) -> str:
-    """Blank out fenced code blocks and inline code spans, keeping line numbers and offsets."""
+    """Blank out code (fenced and indented blocks, inline spans), keeping lines and offsets.
+
+    An indented code block is a line indented 4+ columns past the current list item's content
+    (or the margin) that follows a blank line; it runs until a less indented non-blank line.
+    """
     out: list[str] = []
     fence: str | None = None
+    in_indented = False
+    prev_blank = True
+    list_indent = 0  # content column of the innermost open list item
     for line in text.split("\n"):
+        expanded = line.expandtabs(4)
+        indent = len(expanded) - len(expanded.lstrip(" "))
+        blank = not line.strip()
         m = _FENCE_RE.match(line)
-        if fence is None:
-            if m:
-                fence = m.group(1)
-                out.append(" " * len(line))
-            else:
-                out.append(_CODE_SPAN_RE.sub(lambda c: " " * len(c.group(0)), line))
-        else:
+        if fence is not None:
             closing = m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence)
             if closing and not line.strip().strip(fence[0]):
                 fence = None
             out.append(" " * len(line))
+            prev_blank = False
+            continue
+        if in_indented and (blank or indent >= list_indent + 4):
+            out.append(" " * len(line))
+            continue
+        in_indented = False
+        if not blank and prev_blank and indent >= list_indent + 4:
+            in_indented = True
+            out.append(" " * len(line))
+            prev_blank = False
+            continue
+        if m:
+            fence = m.group(1)
+            out.append(" " * len(line))
+            prev_blank = False
+            continue
+        if not blank:
+            item = _LIST_ITEM_RE.match(expanded)
+            if item:
+                list_indent = len(item.group(0))
+            elif prev_blank and indent < list_indent:
+                list_indent = 0  # a paragraph outside the list closes it
+        out.append(_CODE_SPAN_RE.sub(lambda c: " " * len(c.group(0)), line))
+        prev_blank = blank
     return "\n".join(out)
 
 
@@ -395,23 +426,34 @@ def _tokenize(body: str, where: str) -> list[tuple[str, str | None]]:
 
 
 def _preceding_prose(
-    original: list[str], masked: list[str], comment_lines: set[int], line: int
+    original: list[str], masked: list[str], comment_lines: set[int], line: int, same_line: str
 ) -> str:
-    for idx in range(line - 2, -1, -1):
-        if not masked[idx].strip() or idx in comment_lines:
-            continue  # blank, inside a code block, or an HTML comment
-        prose = _prose(original[idx])
-        if prose:
-            return prose
-    return ""
+    """The paragraph or list item that ends just above the annotation on 1-based ``line``.
 
-
-def _prose(line: str) -> str:
-    text = _LIST_MARKER_RE.sub("", line).strip()
-    text = text.lstrip("#>").strip()
+    Prose before the annotation on its own line counts as the paragraph's last line.
+    """
+    collected: list[str] = [same_line] if same_line.strip() else []
+    idx = line - 2
+    if not collected:  # skip blank lines, code and other comments up to the nearest prose
+        while idx >= 0 and (not masked[idx].strip() or idx in comment_lines):
+            idx -= 1
+    while idx >= 0 and masked[idx].strip() and idx not in comment_lines:
+        text = original[idx]
+        if text.lstrip().startswith("#"):  # a heading ends the paragraph above it
+            if not collected:
+                collected.append(text)
+            break
+        collected.append(text)
+        if _LIST_ITEM_RE.match(text.expandtabs(4)) or text.lstrip().startswith(">"):
+            break  # the start of the list item or quote
+        idx -= 1
+    joined = " ".join(_LIST_MARKER_RE.sub("", t).strip().lstrip("#>") for t in reversed(collected))
     for pattern, repl in _EMPHASIS_RES:
-        text = pattern.sub(repl, text)
-    return text
+        joined = pattern.sub(repl, joined)
+    joined = " ".join(joined.split())
+    if len(joined) > _DESCRIPTION_MAX:
+        joined = joined[: _DESCRIPTION_MAX - 3].rsplit(" ", 1)[0] + "..."
+    return joined
 
 
 def _default_id(rel_path: str, line: int) -> str:
@@ -493,7 +535,19 @@ def _validate_params(rule: Rule, spec: CheckSpec, where: str) -> dict[str, Any]:
         else:
             default = param.default
             out[key] = list(default) if isinstance(default, list | tuple) else default
+    if spec.one_of and all(_is_default(out[k], spec.params[k]) for k in spec.one_of):
+        raise ConfigError(
+            f"{where}: set at least one of {', '.join(spec.one_of)}; without them the check "
+            "has nothing to check"
+        )
     return out
+
+
+def _is_default(value: Any, param: Param) -> bool:
+    default = param.default
+    if isinstance(default, tuple):
+        default = list(default)
+    return bool(value == default)
 
 
 def _coerce(value: Any, param: Param, where: str) -> Any:
@@ -506,15 +560,21 @@ def _coerce(value: Any, param: Param, where: str) -> Any:
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             _wrong_type(value, kind, where)
         items = [str(v) for v in value]
-        if kind == "regex_list":
-            for item in items:
+        if param.nonempty and not items:
+            raise ConfigError(f"{where}: must not be empty; give at least one value")
+        for item in items:
+            if kind == "regex_list":
                 _compile(item, where)
+            elif kind == "glob_list":
+                _compile_glob(item, where)
+            _check_choice(item, param, where)
         return items
     if kind in ("str", "regex"):
         if not isinstance(value, str):
             _wrong_type(value, kind, where)
         if kind == "regex":
             _compile(value, where)
+        _check_choice(value, param, where)
         return str(value)
     if kind == "int":
         if type(value) is not int:
@@ -543,6 +603,13 @@ def _from_text(text: str, kind: str, where: str) -> Any:
 
 
 def _compile(pattern: str, where: str) -> None:
+    bad = _CONTROL_RE.search(pattern)
+    if bad:
+        hint = _CONTROL_HINTS.get(bad.group(0), "")
+        raise ConfigError(
+            f"{where}: contains a control character {bad.group(0)!r}{hint}; use a TOML literal "
+            f"string so backslashes stay as written: pattern = '\\bfoo'"
+        )
     try:
         re.compile(pattern)
     except re.error as exc:
@@ -551,6 +618,21 @@ def _compile(pattern: str, where: str) -> None:
             f"{where}: invalid regular expression: {exc.msg} at position {pos}\n"
             f"  {pattern}\n  {' ' * pos}^"
         ) from None
+
+
+def _compile_glob(pattern: str, where: str) -> None:
+    try:
+        compile_glob(pattern)
+    except GlobError as exc:
+        raise ConfigError(f"{where}: {exc}") from None
+
+
+def _check_choice(value: str, param: Param, where: str) -> None:
+    if param.choices and value not in param.choices:
+        raise ConfigError(
+            f"{where}: invalid value {value!r}{_did_you_mean(value, param.choices)}; "
+            f"expected one of {', '.join(param.choices)}"
+        )
 
 
 def _wrong_type(value: Any, kind: str, where: str) -> NoReturn:

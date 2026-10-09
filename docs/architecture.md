@@ -99,9 +99,13 @@ after_last_edit = true
 when_paths = ["src/**"]
 ```
 
-Every key that is not a rule field is a check parameter. Unknown checks and unknown or
-mistyped parameters are load errors that cite `file:line`. Regexes are Python `re`, matched
-with `search`. `pyproject.toml` takes the same schema under `[tool.ruleproof]`.
+Every key that is not a rule field is a check parameter. Unknown checks, unknown or
+mistyped parameters, values outside a parameter's `choices`, empty lists for `nonempty`
+parameters, unmet `one_of` requirements, and invalid regexes or globs are load errors that
+cite `file:line`. Regexes are Python `re`, matched with `search`. The top-level `exclude`
+lists globs skipped when scanning for instruction files. The rules file is the first of
+`ruleproof.toml`, `.ruleproof.toml` and `pyproject.toml` (same schema under
+`[tool.ruleproof]`); files are never merged.
 
 ### Inline annotations
 
@@ -113,10 +117,11 @@ A rule can sit next to the prose it enforces, invisible in rendered Markdown:
 ```
 
 Syntax: `<!-- ruleproof: <check> key=value key="value with spaces" -->`. List values are
-comma-separated. `id`, `severity` and `description` are optional; `id` defaults to
-`<file-stem>-L<line>`, `description` to the nearest preceding prose line, `source` to the
+comma-separated. `id`, `severity` and `description` are optional; `id` defaults to the
+lowercased `<file-stem>-l<line>` (prefixed with the directory for nested files:
+`pkg/agents-l7`), `description` to the preceding paragraph or list item, `source` to the
 annotation's file and line. Annotations in a nested instruction file (`pkg/AGENTS.md`) get
-`scope = "pkg"`.
+`scope = "pkg"`. Annotations inside code blocks and inline code are ignored.
 
 ## Checks
 

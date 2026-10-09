@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from ruleproof.paths import glob_match, in_scope, match_any, normalize, relpath_in_repo
+from ruleproof.paths import (
+    GlobError,
+    compile_glob,
+    glob_match,
+    in_scope,
+    match_any,
+    normalize,
+    relpath_in_repo,
+)
 
 
 @pytest.mark.parametrize(
@@ -18,7 +26,29 @@ from ruleproof.paths import glob_match, in_scope, match_any, normalize, relpath_
         ("src/a.py", "src/**", True),
         ("srcx/a.py", "src/**", False),
         ("vendor/x/y.js", "vendor/", True),
-        ("a/vendor/x.js", "vendor/", False),
+        ("a/vendor/x.js", "vendor/", True),  # gitignore: a trailing slash does not anchor
+        ("a/vendor/x.js", "/vendor/", False),
+        # a pattern also matches everything below it (gitignore semantics)
+        ("api/gen/x.go", "api/gen", True),
+        ("api/gen", "api/gen", True),
+        ("api/generated/x.go", "api/gen", False),
+        ("lib/api/gen/x.go", "api/gen", False),
+        ("examples/demo/AGENTS.md", "examples", True),
+        ("pkg/examples/demo/AGENTS.md", "examples", True),
+        ("x.py/inner.txt", "*.py", True),
+        ("src/a.py/b", "src/*.py", True),
+        ("a/b", "**", True),
+        # character classes
+        ("a[1].txt", "a[[]1].txt", True),
+        ("a1.txt", "a[[]1].txt", False),
+        ("]x", "[]]x", True),
+        ("ax", "[!]]x", True),
+        ("]x", "[!]]x", False),
+        ("b.py", "[a-c].py", True),
+        ("-.py", "[a-].py", True),
+        ("a/b", "a[!x]b", False),  # a class never matches /
+        ("a*b", "a[*]b", True),
+        ("axb", "a[*]b", False),
         ("foo.before_cleanup", "*.before_*", True),
         ("CHANGELOG.md", "CHANGELOG.md", True),
         ("docs/CHANGELOG.md", "CHANGELOG.md", True),
@@ -38,6 +68,22 @@ from ruleproof.paths import glob_match, in_scope, match_any, normalize, relpath_
 )
 def test_glob_match(path: str, pattern: str, expected: bool) -> None:
     assert glob_match(path, pattern) is expected
+
+
+@pytest.mark.parametrize(
+    ("pattern", "message"),
+    [
+        ("[!]x", "unclosed character class"),
+        ("a[bc", r"unclosed character class; write \[\[\] to match a literal \["),
+        ("[z-a]", "reversed range z-a"),
+        ("a[b/c]", "'/' inside a character class"),
+        ("", "empty glob pattern"),
+        ("/", "empty glob pattern"),
+    ],
+)
+def test_compile_glob_errors(pattern: str, message: str) -> None:
+    with pytest.raises(GlobError, match=message):
+        compile_glob(pattern)
 
 
 def test_match_any() -> None:
@@ -88,6 +134,35 @@ def test_relpath_in_repo(path: str, repo: str, cwd: str | None, expected: str | 
     assert relpath_in_repo(path, repo, cwd) == expected
 
 
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("~/.bashrc", None),
+        ("~\\.bashrc", None),
+        ("~", None),
+        ("~/proj/src/a.py", "src/a.py"),
+        ("~\\proj\\src\\a.py", "src/a.py"),
+        ("~/proj2/a.py", None),
+        ("~other/proj/a.py", None),
+    ],
+)
+def test_relpath_in_repo_home(
+    path: str, expected: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", "/home/u")
+    assert relpath_in_repo(path, "/home/u/proj") == expected
+
+
+def test_relpath_in_repo_home_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\x")
+    assert relpath_in_repo(r"~\proj\a.py", r"C:\Users\x\proj") == "a.py"
+    assert relpath_in_repo("~/.ssh/config", r"C:\Users\x\proj") is None
+    monkeypatch.delenv("USERPROFILE")
+    assert relpath_in_repo("~/proj/a.py", r"C:\Users\x\proj") is None
+
+
 def test_relpath_without_repo() -> None:
     assert relpath_in_repo("src/a.py", None) == "src/a.py"
     assert relpath_in_repo("/abs/a.py", None) is None
+    assert relpath_in_repo("~/a.py", None) is None
