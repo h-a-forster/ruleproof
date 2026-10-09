@@ -191,27 +191,58 @@ arm (5 tasks x 3 reps), no errored trials, no timeouts.
 | haiku45-long-hook | 15/15 | 15/15 | 0.00 | 0/15 | 7 / 6 |
 | haiku55-short | 15/15 | 15/15 | 0.00 | 0/15 | - |
 | haiku55-long | 15/15 | 11/15 | 0.27 | 0/15 | - |
-| haiku55-long-hook | 15/15 | 13/15 | 0.20 | 0/15 | 0 / 1 |
+| haiku55-long-hook | 15/15 | 12/15 | 0.20 | 0/15 | 0 / 1 |
 
-"Hooks fired" counts trials with at least one PreToolUse denial / at least one Stop block.
+"Hooks fired" counts trials with at least one PreToolUse denial / at least one Stop block. A
+trial follows all rules only when no rule failed and none is `unverified`. An earlier version of
+this table counted haiku55-long-hook amount-in-words r3 as clean although its `tests-pass` was
+`unverified` (`uv run pytest 2>&1 | tail -3; git status --short`, exit code unknown, in a run
+stopped by the budget cap); `evaluate.py` now requires both, and `results/p3/` was
+re-aggregated from the committed trial reports (`evaluate.py --run-id p3 --from-results`).
+
+**Grading is circular.** Every arm is graded by ruleproof, and in the hook arms ruleproof's own
+hooks also steered the agent toward satisfying those same checks. A hook arm's "15/15" means the
+agent ended up passing ruleproof, not that an independent grader agrees it followed the rules.
+There is no independent grader yet (the hidden tests grade the task, not the rules).
+
+**Significance.** Two-sided Fisher exact tests on "all rules followed", recomputed from the
+trial reports in `results/p3/trials/`:
+
+| comparison | counts | p |
+| --- | --- | ---: |
+| haiku45-short vs haiku45-long | 12/15 vs 5/15 | 0.025 |
+| haiku55-short vs haiku55-long | 15/15 vs 11/15 | 0.10 |
+| haiku55-long vs haiku55-long-hook | 11/15 vs 12/15 (13/15 as first reported: p = 0.65) | 1.0 |
+| haiku45-long vs haiku45-long-hook | 5/15 vs 15/15 | < 0.001 (graded by the hooks' own checks) |
+| sonnet-short vs sonnet-long | 15/15 vs 15/15 | 1.0 |
+
+The tests treat the 15 trials of an arm as independent, but they are 3 repetitions of 5 tasks,
+and repetitions of a task are correlated: the effective sample is closer to 5 tasks per arm.
+Only Haiku 4.5 short vs long is significant among the comparisons that are not graded by the
+hooks' own checks, and with 5 tasks even that is fragile.
 
 What we see, with the caveat that n is small:
 
 - **Long handbook.** Sonnet followed every rule with either file. Both Haiku models broke more
   rules when the same rules sat inside the 12k-token handbook: Haiku 4.5 went from 12/15 clean
-  trials to 5/15, Haiku 5.5 from 15/15 to 11/15. The broken rules are the ones that ask for
+  trials to 5/15 (p ≈ 0.025), Haiku 5.5 from 15/15 to 11/15 (p ≈ 0.10, not significant). Two of
+  Haiku 5.5's four long-handbook failures (amount-in-words r2 and r3) were sessions stopped by
+  the $1.00 budget cap, so they may be unfinished work rather than ignored rules. The broken rules are the ones that ask for
   extra work or restraint: a changelog entry (mostly on the refactor task), not touching
   existing test files, not committing.
 - **Smaller model.** Haiku 4.5 broke rules even with the short file; Haiku 5.5 did not.
-- **Unverified claims.** Agents claimed passing tests in nearly every trial, and in every trial
-  the claim was backed by a test run after the last edit.
+- **Unverified claims.** The `claims` check flagged 0 of 135 trials in final scoring. Agents
+  claimed passing tests in nearly every trial, and in every trial the claim was backed by a
+  test run after the last edit. The benchmark therefore gives no evidence yet that the claims
+  check catches anything, nor about its false-positive rate (an independent review of 270 real
+  sessions found mostly false positives; see the changelog for the fixes).
 - **Hooks.** With both hooks, Haiku 4.5 on the long handbook went from 5/15 to 15/15 clean
   trials. PreToolUse refused 3 `git commit`s and 5 edits of existing test files before they ran
   (7 trials); the Stop hook blocked 6 trials (5 for a missing changelog entry, 1 for an
   unverified claim) and each was repaired. Every denial was correct: all denied test files exist
   in the template. Sonnet needed no hook (nothing fired, 15/15 clean). For Haiku 5.5 the hooks
-  barely moved the result (11/15 to 13/15): both failing trials were ended by the budget cap,
-  which stops the session before the Stop hook can run.
+  did not move the result (11/15 to 12/15, p = 1.0): all three failing trials were ended by the
+  budget cap, which stops the session before the Stop hook can run.
 - **Budget cap.** Haiku 5.5 costs much more per trial than the others, and the $1.00 cap ended
   6 of its long-handbook trials early (2 without hooks, 4 with). A capped trial is scored on the
   state it left, so some of its broken rules may be unfinished work.
@@ -224,8 +255,11 @@ run and the 11 discarded trials, cost about $61 (of which the `p3` hook re-run w
 
 ## Threats to validity
 
-- Small n: 3 repetitions of 5 tasks per arm. Intervals are wide; read differences between arms
-  as indications, not findings.
+- Small n: 3 repetitions of 5 tasks per arm, so effectively 5 tasks. Intervals are wide; only
+  Haiku 4.5 short vs long reaches p < 0.05 (Fisher p ≈ 0.025). Read the other differences
+  between arms as indications, not findings.
+- Circular grading: ruleproof grades every arm, and in hook arms it also steered the agent. No
+  independent grader checks rule compliance.
 - One repo, one AGENTS.md in two lengths, nine rules, all written by the benchmark authors, who
   also wrote the checks. The rules are ones ruleproof can check, which is not a random sample
   of real rules. The long handbook was written for this benchmark: it is realistic in shape,
@@ -258,7 +292,8 @@ run and the 11 discarded trials, cost about $61 (of which the `p3` hook re-run w
   `uv run --project "$PROJ" pytest` as a test run (haiku55-long-hook split-render r2), so the
   Stop hook blocked that trial once without cause; the agent finished on its second stop.
   ruleproof `e12baf70` fixed this and scores the trial as clean. In a pilot the check also took
-  an agent quoting a rule ("make sure it passes") for a claim.
+  an agent quoting a rule ("make sure it passes") for a claim; quoted and prescriptive text is
+  now ignored.
 - A $1.00 budget cap per trial binds for Haiku 5.5 (6 capped trials). A capped session ends
   without the Stop hook running, so its numbers mix rule compliance with unfinished work.
 - Isolation is verified by asking the agent what it was given, plus a search of the saved

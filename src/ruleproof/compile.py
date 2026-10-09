@@ -189,7 +189,7 @@ def extract_directives(text: str, rel_path: str) -> list[Directive]:
     """
     out: list[Directive] = []
     for block in _blocks(text.splitlines()):
-        for k, (line, sentence) in enumerate(_sentences(block)):
+        for k, (line, sentence) in enumerate(_joined_continuations(_sentences(block))):
             clean = _clean(sentence)
             read = _with_lead(clean, block.lead) if block.is_item and k == 0 else clean
             if _is_directive(read) or (read != clean and "`" in clean):
@@ -197,6 +197,23 @@ def extract_directives(text: str, rel_path: str) -> list[Directive]:
                 out.append(
                     Directive(rel_path, line, clean, _kind(read), lead, annotated=block.annotated)
                 )
+    return out
+
+
+# "Never `pip install`. That includes `uv pip install`.": the second sentence widens the first.
+_CONTINUATION = re.compile(
+    r"^(?:this|that)\s+(?:also\s+)?(?:includes|applies\s+to|covers|means)\b", re.IGNORECASE
+)
+
+
+def _joined_continuations(sentences: Iterable[tuple[int, str]]) -> list[tuple[int, str]]:
+    out: list[tuple[int, str]] = []
+    for line, sentence in sentences:
+        if out and _CONTINUATION.match(sentence.strip()):
+            prev_line, prev = out[-1]
+            out[-1] = (prev_line, f"{prev.rstrip()} {sentence.strip()}")
+        else:
+            out.append((line, sentence))
     return out
 
 
@@ -777,6 +794,14 @@ def _is_argument(tok: str) -> bool:
     )
 
 
+# "never `pip install`, and that includes `uv pip install`": the uv exemption does not apply.
+_UV_PIP_INCLUDED = re.compile(
+    r"\b(?:includ(?:es?|ing)|even|nor|also\s+(?:applies\s+to|covers?|means?|forbids?))\s+"
+    r"(?:the\s+)?`?uv\s+pip\b"
+)
+_PIP_ANY = r"\bpip3?\s+install\b"
+
+
 _MULTI_COMMAND = _words(
     "cargo go uv git gh dotnet poetry npm pnpm yarn bun deno make just docker kubectl hatch pdm "
     "rye nx turbo gradle mvn bazel"
@@ -995,6 +1020,9 @@ def _rec_commands(d: Directive, s: _Sentence, repo: _Repo) -> list[_Emit]:
                 if fr is None or sp.text.startswith("-") or _FORCE_PUSH_CMD.search(sp.text):
                     continue  # flags and force pushes have dedicated recognisers
                 regex, label = fr
+                if regex == _FAMILY_FORBID["pip"] and _UV_PIP_INCLUDED.search(s.low):
+                    regex = _PIP_ANY  # "that includes `uv pip install`": the prose wins
+                    others = [o for o in others if not re.match(r"uv\s+pip\b", o)]
                 if any(re.search(regex, o) for o in others):
                     continue  # the sentence also recommends something this would match
                 conf = 0.9 - (0.25 if soft else 0) - (0.25 if conditional else 0)
@@ -1285,6 +1313,10 @@ def _rec_substitution(d: Directive, s: _Sentence, repo: _Repo) -> list[_Emit]:
             for b in group:
                 out.extend(_ban(b, nxt, 0.7 if soft else 0.9))
     out.extend(_runner_substitution(s))
+    if _UV_PIP_INCLUDED.search(s.low):
+        for e in out:
+            if e.params.get("command") == _FAMILY_FORBID["pip"]:
+                e.params["command"] = _PIP_ANY
     return out
 
 

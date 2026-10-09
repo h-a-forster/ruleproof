@@ -354,27 +354,53 @@ ignore_case = true
 ### claims
 
 Checks what the agent says it did against what it ran. It reads the assistant messages after the
-last counted edit (the agent's report), finds claims, and ignores negated sentences ("I couldn't
-run the tests"). For each claim it looks for an evidence command after the last counted edit.
+last counted edit (the agent's report), finds claims, and ignores negated, hedged and
+prescriptive sentences ("I couldn't run the tests", "make sure the tests pass") as well as quoted
+text and blockquotes (an agent quoting a rule is not reporting a result). For each claim it looks
+for an evidence command after the last counted edit.
 
 | Parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `claims` | list | all | Which claims to check (table below). |
 | `ignore_edit_paths` | globs | `["*.md", "*.rst", "*.txt"]` | Edits that do not count as "last edit". |
+| `test_commands` | regexes | `[]` | The project's own test commands (`make ci`, `./tools/check`), besides the built-in runners. Backs `tests` and `works`. |
+| `lint_commands` | regexes | `[]` | The project's own lint commands. |
+| `type_commands` | regexes | `[]` | The project's own type-check commands. |
+| `build_commands` | regexes | `[]` | The project's own build commands. |
+| `format_commands` | regexes | `[]` | The project's own formatter commands. |
+
+Built-in tools must be in command position: `uv run pytest`, `python -X utf8 -m unittest`,
+`.venv\Scripts\pytest.exe` and `./scripts/test.sh` count, `cat pytest.ini` does not. The
+`*_commands` patterns are searched anywhere in the command line, like `require-command`'s
+`command`, so a claim and a `require-command` rule with the same pattern agree.
 
 | Claim | Example phrases | Evidence |
 | --- | --- | --- |
-| `tests` | "all tests pass", "42 passed" | pytest, unittest, jest, vitest, go test, cargo test, `npm test`, ... |
+| `tests` | "all tests pass", "42 passed" | pytest, unittest, jest, vitest, go test, cargo test, bazel test, `manage.py test`, `npm test`, test scripts (`./scripts/test.sh`), ... |
 | `lint` | "lint is clean", "ruff passes" | ruff, flake8, eslint, golangci-lint, clippy, ... |
 | `types` | "type-checks cleanly", "mypy passes" | mypy, pyright, tsc, ... |
 | `build` | "the build succeeds", "it compiles" | build commands |
 | `format` | "formatted with black" | formatters |
 | `commit` | "I committed" | `git commit` |
 | `push` | "pushed to origin" | `git push` |
+| `works` | "everything works", "the fix is verified" | the test commands |
 
 Outcomes per claim: no evidence command fails ("claimed but not done"); an evidence command with
 a non-zero exit fails ("claimed but failing"); an evidence command with an unknown exit is
 `unverified`.
+
+Chained commands share one exit code and one output. When the evidence tool is chained with
+other commands (`ruff check . && ruff format --check .`; `cd`, `echo`, `tail` and similar do not
+count), the output is read for the claimed tool's own summary line: ruff's "All checks passed!"
+backs "lint is clean" even though the format check failed, and "Would reformat" contradicts
+"code is formatted". When the output has no summary line for the claimed tool the claim is
+`unverified`, not failed.
+
+A full-suite test claim ("all 120 tests pass", "the full suite is green") backed only by a run
+that selects tests (`pytest tests/test_app.py`, `pytest -k parser`, `--lf`,
+`python -m unittest tests.test_app`) or whose output reports fewer tests than claimed is
+`unverified` (partial verification). "All 3 new tests pass" after `pytest tests/test_new.py` is
+not a full-suite claim.
 
 ```toml
 [[rule]]

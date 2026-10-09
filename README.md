@@ -202,26 +202,56 @@ user-level config excluded, 3 runs per task, so n = 15 per row. "Short" is a 55-
 | Haiku 4.5 | long | PreToolUse + Stop | 15/15 | 15/15 |
 | Haiku 5.5 | short | | 15/15 | 15/15 |
 | Haiku 5.5 | long | | 15/15 | 11/15 |
-| Haiku 5.5 | long | PreToolUse + Stop | 15/15 | 13/15 |
+| Haiku 5.5 | long | PreToolUse + Stop | 15/15 | 12/15 |
 
-- The long handbook cost both Haiku models compliance. Sonnet held. The rules dropped were the
-  ones that ask for extra work or restraint: a changelog entry, leaving existing tests alone,
-  not committing.
-- With both hooks, Haiku 4.5 on the long handbook followed every rule in all 15 runs.
+"All rules followed" means no rule failed and none was left unverified.
+
+- **Grading is circular.** Every row, including the hook rows, is graded by ruleproof itself.
+  In the hook rows the same rules also steered the agent, so those rows show that the agent
+  ended up satisfying ruleproof, not that an independent grader agrees. There is no
+  independent grader yet.
+- **Only one difference is statistically significant.** Haiku 4.5 short vs long (12/15 vs
+  5/15, Fisher exact p ≈ 0.025). Haiku 5.5 short vs long (15/15 vs 11/15) gives p ≈ 0.10, and
+  Haiku 5.5 long vs long with hooks gives p ≈ 0.65 as first reported (11/15 vs 13/15; p = 1.0
+  with the corrected 12/15). The 15 runs per row are 3 repeats of 5 tasks, so there are
+  effectively 5 independent tasks per row; read the rest as indications.
+- The long handbook cost Haiku 4.5 compliance. The rules dropped were the ones that ask for
+  extra work or restraint: a changelog entry, leaving existing tests alone, not committing.
+- 2 of Haiku 5.5's 4 long-handbook failures were runs stopped by the $1 per-run budget cap,
+  which may leave work unfinished. All 3 of its failures with hooks were capped runs too; the
+  cap ends the session before the Stop hook can run.
+- With both hooks, Haiku 4.5 on the long handbook passed every rule in all 15 runs.
   PreToolUse refused 3 `git commit`s and 5 edits to existing tests before they ran. The Stop
   hook sent 6 runs back to add a changelog entry or verify a claim; all 6 were fixed.
-- Haiku 5.5's two remaining failures hit the $1 per-run budget cap. The cap ends the session
-  before the Stop hook can run.
-- Agents claimed passing tests in almost every run. Every claim was backed by a test run after
-  the last edit.
-- n is small, there is one repo, and the same authors wrote the rules and the checks. See
+- **No evidence for the claims check yet.** In final scoring it flagged 0 of 135 runs: agents
+  claimed passing tests in almost every run and backed every claim with a test run after the
+  last edit. The bench shows neither precision nor recall for it.
+- One repo, and the same authors wrote the tasks, the rules and the checks. See
   [threats to validity](bench/README.md#threats-to-validity).
 
 **Compile** ([bench/corpus/](bench/corpus/results.md)). `ruleproof compile` was run on 50 public
 instruction files (Next.js, VS Code, Deno, ruff, uv, Airflow, ...). Of 1,960 directives, 62
-became checks (3.2%), giving 70 rules. A hand review of 120 randomly sampled rules found 117
-correct (97.5%); the three errors are fixed. Coverage is low by design. Most directives are
-style or design guidance with no deterministic check, and `compile` skips what it cannot check.
+became checks (3.2%), giving 70 rules. Precision is not well measured. The authors hand-checked
+three 40-rule samples drawn from the same 70–74-rule pool, tuning the compiler on this corpus
+between samples (38/40, then 39/40, then 40/40). The samples overlap and were not held out, and
+a later independent review found 4 classes of error none of them had caught. The least biased
+figure is the first sample, 38/40 (95%, 95% CI 83–99%), on files the compiler had been tuned on;
+precision on unseen files is unknown. Coverage is low by design. Most directives are style or
+design guidance with no deterministic check, and `compile` skips what it cannot check.
+
+## Prior art
+
+- **Claim checking.** [claimproof](https://pypi.org/project/claimproof/),
+  [groundtruth](https://github.com/msal2020/groundtruth), attest and mcp-truth-check also check
+  what an agent says it did against evidence. ruleproof's `claims` check is one more heuristic
+  in that space, and the benchmark has not yet shown it catching anything (see above).
+- **Blocking while the agent works.** Claude Code's own `permissions.deny` and hooks already
+  block forbidden commands and edits in Claude Code sessions; ruleproof's hooks are a
+  convenience on top, not something only it can do.
+
+What ruleproof adds is narrower: rules taken from the instruction files you already have,
+checked after the fact against both the session transcript and the git diff, the same way for
+Claude Code, Codex and Gemini CLI, deterministically and in CI.
 
 ## What it does not do
 

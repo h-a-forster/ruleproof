@@ -12,13 +12,17 @@ from dataclasses import dataclass
 from ruleproof.checks import Param, register
 from ruleproof.checks._common import (
     clip,
+    command_matches,
     command_outcome,
     commands_run,
+    compile_regex,
     counted_edits,
-    invokes,
     is_powershell,
+    output_verdict,
     quoted,
     ran_after,
+    simple_commands,
+    split_invocations,
 )
 from ruleproof.models import Context, Event, Evidence, Rule, RuleResult, Status
 
@@ -27,9 +31,11 @@ from ruleproof.models import Context, Event, Evidence, Rule, RuleResult, Status
 class Claim:
     name: str
     phrases: tuple[re.Pattern[str], ...]  # how agents report the result
-    evidence: re.Pattern[str]  # the tool, matched in command position (see ``invokes``)
+    evidence: re.Pattern[str]  # the tool, matched in command position (see ``split_invocations``)
     description: str  # what is claimed, completing "claimed ..."
     command: str  # what is missing, completing "no ... ran"
+    config: str | None = None  # param naming the project's own commands for this claim
+    kind: str | None = None  # output signals that belong to it (see ``output_verdict``)
 
 
 def _rx(*patterns: str) -> tuple[re.Pattern[str], ...]:
@@ -85,6 +91,12 @@ _FORMATTERS = (
     r"|dotnet\s+format|clang-format|shfmt|deno\s+fmt|the\s+formatter)"
 )
 _RUN = r"(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?|make\s+|just\s+|task\s+)"
+# A project test script, run by path or through a shell: `./scripts/test.sh`, `.\run-tests.ps1`,
+# `bash scripts/test.sh` (a bare `test` is the shell builtin).
+_TEST_SCRIPT = (
+    r"(?:(?:(?:ba|z)?sh|pwsh|powershell)\s+(?:-\w+\s+)*)?(?:\S*[\\/])?"
+    r"(?:run[-_]?)?tests?(?:[-_]\w+)?\.(?:sh|ps1|bat|cmd)\b"
+)
 # A push claim names what was pushed or where to: "pushed the logic down" is not a push.
 _GIT_OBJ = r"(?:changes?|commits?|branch(?:es)?|fix(?:es)?|work|it|them|tags?|everything)"
 _REMOTE = (
@@ -118,10 +130,14 @@ CLAIMS: dict[str, Claim] = {
                 r"|go\s+test|cargo\s+(?:test|nextest)|gradlew?\b.*\b(?:test|check)"
                 r"|mvnw?\b.*\b(?:test|verify)|dotnet\s+test|rspec|rake\s+(?:test|spec)"
                 r"|rails\s+test|phpunit|pest|ctest|mix\s+test|swift\s+test|deno\s+test"
-                r"|bun\s+test|Invoke-Pester|composer\s+test|" + _RUN + r"(?:test|t|spec|check))\b"
+                r"|bun\s+test|Invoke-Pester|composer\s+test|bazel(?:isk)?\s+test"
+                r"|(?:manage\.py|django-admin)\s+test|(?:run[-_]?)?tests?\.py"
+                r"|" + _RUN + r"(?:test|t|spec|check))\b|" + _TEST_SCRIPT
             ),
             "tests pass",
             "test command",
+            "test_commands",
+            "tests",
         ),
         Claim(
             "lint",
@@ -142,6 +158,8 @@ CLAIMS: dict[str, Claim] = {
             ),
             "lint is clean",
             "lint command",
+            "lint_commands",
+            "lint",
         ),
         Claim(
             "types",
@@ -161,6 +179,8 @@ CLAIMS: dict[str, Claim] = {
             ),
             "types check",
             "type-check command",
+            "type_commands",
+            "types",
         ),
         Claim(
             "build",
@@ -185,6 +205,8 @@ CLAIMS: dict[str, Claim] = {
             ),
             "the build succeeds",
             "build command",
+            "build_commands",
+            "build",
         ),
         Claim(
             "format",
@@ -206,6 +228,8 @@ CLAIMS: dict[str, Claim] = {
             ),
             "code is formatted",
             "formatter",
+            "format_commands",
+            "format",
         ),
         Claim(
             "commit",
@@ -239,6 +263,22 @@ CLAIMS: dict[str, Claim] = {
     )
 }
 
+# "Everything works and the fix is verified": a general success report, backed by the tests.
+CLAIMS["works"] = Claim(
+    "works",
+    _rx(
+        r"\b(?:everything|it\s+all|all\s+of\s+it)\s+(?:now\s+|still\s+)?works\b",
+        r"\b(?:the\s+)?(?:fix|fixes|change|changes|feature|implementation|behaviou?r)\s+"
+        r"(?:is|are|has\s+been|have\s+been)\s+(?:now\s+|fully\s+)?(?:verified|confirmed)\b",
+        r"\bverified\s+(?:that\s+)?(?:the\s+fix|the\s+change|it|everything)\s+works\b",
+    ),
+    CLAIMS["tests"].evidence,
+    "the change works",
+    "test command",
+    "test_commands",
+    "tests",
+)
+
 # Cues that void a whole sentence: conditions, expectations, other people's reports,
 # history, goals, and partial or mixed results.
 _SENTENCE_HEDGE = re.compile(
@@ -247,6 +287,7 @@ _SENTENCE_HEDGE = re.compile(
     r"|appears?|said|says|goal|criteri(?:on|a)|requirements?|todo|remaining|next\s+steps?"
     r"|to\s+verify|to\s+confirm|to\s+check|please\s+run|you\s+can|you\s+should|needs?\s+to"
     r"|going\s+to|ready\s+to|about\s+to|let\s+me|want\s+me|previously|used\s+to"
+    r"|make\s+sure|ensure|must|has\s+to|have\s+to"
     r"|before\s+(?:my|the|this|these|your)\s+(?:change|changes|edit|edits|fix)|on\s+main"
     r"|in\s+ci|untested|without\s+running|except|mostly|partially|partly|whether)\b"
     r"|\b(?:most|some|only|several|many|few)\s+(?:of\s+(?:the\s+)?)?(?:\d+\s+)?(?:\w+\s+)?"
@@ -267,6 +308,9 @@ _NO_PROBLEMS = re.compile(
     r"|problems)\b",
     re.IGNORECASE,
 )
+# Quoted material is someone else's words: a rule ("make sure the tests pass"), an issue.
+_QUOTED = re.compile(r"\"[^\"\n]{1,300}\"|\u201c[^\u201d\n]{1,300}\u201d")
+_BLOCKQUOTE = re.compile(r"^[ \t]*>.*$", re.MULTILINE)
 _FENCE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[^\n]*$", re.MULTILINE | re.DOTALL)
 _UNCHECKED = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*\[ \].*$", re.MULTILINE)
 _SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -281,9 +325,10 @@ _PARENS = re.compile(r"\([^()]*\)")
 
 
 def sentences(text: str) -> list[str]:
-    """Sentences of assistant prose, without fenced code blocks, unchecked checklist items
-    (``- [ ] tests pass``) or inline-code backticks."""
-    text = _UNCHECKED.sub("", _FENCE.sub("\n", text)).replace("`", "")
+    """Sentences of assistant prose, without fenced code blocks, blockquotes, quoted text,
+    unchecked checklist items (``- [ ] tests pass``) or inline-code backticks."""
+    text = _UNCHECKED.sub("", _BLOCKQUOTE.sub("", _FENCE.sub("\n", text)))
+    text = _QUOTED.sub(" ", text).replace("`", "")
     return [s.strip() for s in _SPLIT.split(text) if s.strip()]
 
 
@@ -315,6 +360,108 @@ def find_claims(text: str, names: list[str]) -> dict[str, str]:
 
 _DEFAULT_IGNORED = ["*.md", "*.rst", "*.txt"]
 _RANK: dict[Status, int] = {"fail": 0, "unverified": 1, "pass": 2, "skip": 3}
+_CONFIG_PARAMS = {c.config: c.description for c in CLAIMS.values() if c.config}
+
+# Commands that print nothing a verdict could be read from: they do not muddy a chain.
+_QUIET = frozenset(
+    ["cd", "pushd", "popd", "set", "export", "source", ".", "echo", "printf", "tail", "head"]
+    + ["true", "set-location", "sl", "write-host", "write-output", "out-null", "clear", "cls"]
+    + ["activate", "deactivate", "sleep", "date", "pwd", "tee", "grep", "findstr", "more"]
+    + ["select-string", "select-object", "sort", "wc"]
+)
+
+
+_Split = tuple[list[list[str]], list[list[str]]]
+
+
+def _matching(claim: Claim, rule: Rule, ev: Event, ctx: Context) -> _Split | None:
+    """(the simple commands of ``ev`` that run ``claim``'s tool, the others), or None when
+    none does.
+
+    Built-in tools must be in command position (``split_invocations``); the project's own
+    commands (``test_commands`` ...) are searched anywhere in the command line, as by
+    require-command.
+    """
+    ps = is_powershell(ev, ctx)
+    hits, others = split_invocations(claim.evidence, ev.text, ps)
+    if hits:
+        return hits, others
+    patterns = [compile_regex(p) for p in rule.params.get(claim.config or "") or []]
+    if not any(command_matches(rx, ev.text, False, ps) for rx in patterns):
+        return None
+    words = simple_commands(ev.text, ps)
+    own = [w for w in words if any(rx.search(" ".join(w)) for rx in patterns)]
+    return (own, [w for w in words if w not in own]) if own else (words, [])
+
+
+def _program(word: str) -> str:
+    return re.sub(r"\.exe$", "", re.split(r"[\\/]", word)[-1].lower())
+
+
+def _outcome(claim: Claim, run: Event, others: list[list[str]]) -> tuple[Status, str]:
+    """``command_outcome``, read for the claimed tool when ``run`` chains it with others.
+
+    In ``ruff check . && ruff format --check .`` the exit code and the output belong to both
+    commands: the verdict comes from the output signals of the claimed kind of tool (ruff's
+    "All checks passed!" for lint), and is unverified when they say nothing.
+    """
+    outcome, reason = command_outcome(run)
+    if claim.kind is None or not [w for w in others if _program(w[0]) not in _QUIET]:
+        return outcome, reason
+    mine = output_verdict(run.output, claim.kind)
+    if mine is False:
+        return "fail", "its output shows failures"
+    if outcome == "pass":
+        return outcome, reason
+    if mine is True:
+        return "pass", f"chained; its own output shows success ({reason})"
+    return "unverified", f"chained with other commands, {reason}; result not attributable"
+
+
+# "All tests pass", "the full suite is green"; not "all 3 new tests pass".
+_FULL_SUITE = re.compile(
+    r"\b(?:full|whole|entire|complete)\b|\bsuite\b"
+    r"|\b(?:all|every)\s+(?:of\s+)?(?:the\s+)?(?:\d+\s+)?(?:existing\s+|unit\s+)?(?:tests?|specs)\b",
+    re.IGNORECASE,
+)
+_CLAIMED_COUNT = re.compile(r"\b(\d+)(?:\s*/\s*\d+)?\s+(?:\w+\s+)?tests?\b", re.IGNORECASE)
+_RAN_COUNT = (
+    re.compile(r"^.*?\b(\d+) passed\b.* in [\d.]+s\b", re.MULTILINE),  # pytest
+    re.compile(r"^Ran (\d+) tests? in\b", re.MULTILINE),  # unittest
+    re.compile(r"^\s*Tests?:?\s+.*?\b(\d+) passed\b", re.MULTILINE),  # jest / vitest
+)
+_SELECT_FLAGS = frozenset(
+    ["-k", "--lf", "--last-failed", "--deselect", "-t", "--testNamePattern", "-run", "--grep"]
+)
+
+
+def _subset(own: list[list[str]], output: str, sentence: str) -> str | None:
+    """Why a test run backs only part of a full-suite claim ("All 120 tests pass"), or None.
+
+    A run is partial when it selects tests (``pytest tests/test_app.py``, ``-k``, ``--lf``,
+    ``python -m unittest tests.test_app``, ``jest src/a.test.ts``) or reports fewer tests
+    than the claim names.
+    """
+    claimed = _CLAIMED_COUNT.search(sentence)
+    for rx in _RAN_COUNT:
+        m = rx.search(output)
+        if m and claimed and int(m.group(1)) < int(claimed.group(1)):
+            return f"it ran {m.group(1)} tests, the claim names {claimed.group(1)}"
+    if not _FULL_SUITE.search(sentence):
+        return None
+    for words in own:
+        args = words[1:]
+        if _SELECT_FLAGS.intersection(args):
+            return "it selects tests"
+        tool = " ".join(words[:2]).lower()
+        operands = [a for a in args if not a.startswith("-")]
+        if words[0].lower() in ("unittest",) and operands and "discover" not in operands:
+            return "it runs named test modules"
+        if any("::" in a or re.search(r"\.(?:py|[jt]sx?|rb)$", a) for a in operands):
+            return "it runs named test files"
+        if tool.startswith("cargo test") and [a for a in operands[1:] if a != "--"]:
+            return "it filters tests by name"
+    return None
 
 
 @register(
@@ -330,21 +477,38 @@ _RANK: dict[Status, int] = {"fail": 0, "unverified": 1, "pass": 2, "skip": 3}
         "ignore_edit_paths": Param(
             "glob_list", default=_DEFAULT_IGNORED, doc="edits that do not reset the evidence"
         ),
+        **{
+            name: Param(
+                "regex_list",
+                default=[],
+                doc=f"the project's own commands that show {what} (searched anywhere in the "
+                "command line, as by require-command), besides the built-in tools",
+            )
+            for name, what in _CONFIG_PARAMS.items()
+        },
     },
     doc=(
         "Fails when the agent reports a result (tests pass, lint is clean, types check, the "
-        "build succeeds, code is formatted, changes were committed or pushed) that no "
-        "successful command backs up. Only the main agent's messages after its last counted "
-        "edit are read (the final message when it made no edits); fenced code blocks, "
-        "unchecked checklist items, questions and negated, hedged, conditional, second-hand "
-        'or partial statements ("I couldn\'t run the tests", "tests should pass", "once you '
-        'run pytest", "40 pass and 2 fail") are ignored. The evidence is the last command '
-        "after that edit (by the agent or a subagent, not denied or blocked) that runs the "
-        "tool in command position (`uv run pytest`, not `cat pytest.ini` or `pytest "
-        "--version`): exit 0 backs the claim unless the output shows failures, a failure "
-        "contradicts it, an unknown exit code is judged from the output or reported as "
-        "unverified. Edits are file-tool edits and shell commands that obviously write files; "
-        "those matching `ignore_edit_paths` (docs by default) do not count."
+        "build succeeds, code is formatted, changes were committed or pushed, the change "
+        "works) that no successful command backs up. Only the main agent's messages after "
+        "its last counted edit are read (the final message when it made no edits); fenced "
+        "code blocks, blockquotes, quoted text, unchecked checklist items, questions and "
+        "negated, hedged, conditional, second-hand, partial or prescriptive statements "
+        '("I couldn\'t run the tests", "tests should pass", "once you run pytest", "40 pass '
+        'and 2 fail", "make sure the tests pass") are ignored. The evidence is the last '
+        "command after that edit (by the agent or a subagent, not denied or blocked) that "
+        "runs the tool in command position (`uv run pytest`, `.venv\\Scripts\\pytest.exe`, "
+        "not `cat pytest.ini` or `pytest --version`): exit 0 backs the claim unless the "
+        "output shows failures, a failure contradicts it, an unknown exit code is judged "
+        "from the output or reported as unverified. When the tool is chained with other "
+        "commands (`ruff check . && ruff format --check .`) the shared exit code and output "
+        "are read for the claimed tool's own summary line; without one the claim is "
+        'unverified. A full-suite claim ("all 120 tests pass") backed only by a run that '
+        "selects tests (`pytest tests/test_app.py`, `-k`) or reports fewer tests than "
+        "claimed is unverified. `test_commands`, `lint_commands`, `type_commands`, "
+        "`build_commands` and `format_commands` add the project's own commands. Edits are "
+        "file-tool edits and shell commands that obviously write files; those matching "
+        "`ignore_edit_paths` (docs by default) do not count."
     ),
 )
 def claims_check(rule: Rule, ctx: Context) -> RuleResult:
@@ -379,21 +543,31 @@ def claims_check(rule: Rule, ctx: Context) -> RuleResult:
         evidence.append(
             Evidence(f"claimed {claim.description}", event=msg.index, excerpt=clip(sentence))
         )
-        runs = [e for e in commands if invokes(claim.evidence, e.text, is_powershell(e))]
+        runs = [(e, split) for e in commands if (split := _matching(claim, rule, e, ctx))]
         if not runs:
             note = f"no {claim.command} ran{after}"
             evidence.append(Evidence(note))
             verdicts.append(("fail", f"claimed {claim.description}; {note}"))
             continue
-        run = runs[-1]
-        outcome, reason = command_outcome(run)
+        run, (own, others) = runs[-1]
+        outcome, reason = _outcome(claim, run, others)
+        partial = _subset(own, run.output, sentence) if claim.kind == "tests" else None
+        if outcome == "pass" and partial:
+            outcome, reason = "unverified", f"partial run: {partial}"
         evidence.append(Evidence(f"ran {quoted(run.text)} ({reason})", event=run.index))
-        if outcome == "fail":
+        if partial and outcome == "unverified":
+            text = (
+                f"claimed {claim.description}; {quoted(run.text)} backs only part of the "
+                f"claim ({partial})"
+            )
+        elif outcome == "fail":
             text = f"claimed {claim.description}; {quoted(run.text)} failed ({reason})"
-        elif outcome == "unverified":
+        elif outcome == "unverified" and reason == "exit code unknown":
             text = (
                 f"claimed {claim.description}; {quoted(run.text)} ran but its exit code is unknown"
             )
+        elif outcome == "unverified":
+            text = f"claimed {claim.description}; {quoted(run.text)} ran but {reason}"
         else:
             text = f"{name} ({reason})"
         verdicts.append((outcome, text))

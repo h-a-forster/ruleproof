@@ -102,7 +102,14 @@ correct when it is the intended approximation).
   warning that flags any new bare `check(` call, which is what the sentence says but broader
   than the deprecated helper it means.
 
-Observed precision: 117 / 120 (97.5%) across the three reviews, all three errors since fixed.
+What these numbers do and do not show. The three samples are not independent: each drew 40
+rules from the same 70–74-rule pool (so they overlap heavily), the compiler was tuned on this
+same corpus between samples, and the reviews were done by the authors. The independent review
+above then found four classes of error that none of the 120 sampled rules had exposed. Pooling
+the samples into "117 / 120 (97.5%)", as an earlier version of this page did, overstates what is
+known. The least biased figure is the first sample, **38 / 40 (95%, Wilson 95% CI 83–99%)**, and
+even that is in-sample: the compiler had already been tuned on these files. Precision on
+instruction files the compiler was not tuned on has not been measured.
 Coverage is low by design: most directives in these files are style and design guidance with
 no deterministic check (naming, architecture, review etiquette), and the compiler only emits
 rules for phrasing it understands.

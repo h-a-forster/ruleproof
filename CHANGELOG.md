@@ -9,6 +9,20 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - The action's `version` input installs that release from its git tag instead of PyPI.
+- `claims` recognises Windows command lines (`.venv\Scripts\pytest.exe`,
+  `.venv\Scripts\python.exe -m unittest`); backslashes in paths were dropped, so these runs
+  were missed or an older failing run was cited. Codex shell calls in a session on a Windows
+  drive are read as PowerShell. `claims` and `require-command` now agree on these commands.
+- `claims` recognises `python -X utf8 -m unittest`, `python manage.py test`, `bazel test` and
+  test scripts run by path (`./scripts/test.sh`), and takes `test_commands`, `lint_commands`,
+  `type_commands`, `build_commands` and `format_commands` for project-specific commands.
+- `claims` attributes the shared output of chained commands (`ruff check . && ruff format
+  --check .`) to each tool by its summary line, and reports `unverified` when it cannot.
+- `claims` ignores quoted text, blockquotes and prescriptions ("make sure the tests pass").
+- `claims` catches "everything works" / "the fix is verified" (new `works` claim) and reports a
+  full-suite claim backed only by a subset run (`pytest tests/test_app.py`) as `unverified`.
+- `ruleproof compile` no longer exempts `uv pip install` from a pip ban whose prose says it
+  includes `uv pip install`.
 
 ## [0.1.0] - 2026-10-10
 
