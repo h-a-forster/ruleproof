@@ -1,6 +1,11 @@
 {
   "run_id": "base1",
-  "rules": "rules.toml",
+  "sources": [
+    "`base1` (all arms)"
+  ],
+  "rules": [
+    "rules.toml"
+  ],
   "arms": {
     "claude-sonnet": {
       "trials": 15,
@@ -89,11 +94,22 @@
         "unverified": 0,
         "skip": 0
       },
+      "all_rules_followed": {
+        "k": 15,
+        "n": 15,
+        "rate": 1.0,
+        "ci95": [
+          0.7961,
+          1.0
+        ]
+      },
       "rules_broken_per_trial": {
         "mean": 0.0,
         "sd": 0.0,
         "n": 15
       },
+      "rule_failures": {},
+      "hook": null,
       "rules_broken_per_trial_excl_claims": {
         "mean": 0.0,
         "sd": 0.0,

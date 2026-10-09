@@ -93,17 +93,27 @@ class Arm:
         return VARIANTS[self.variant][1]
 
 
+SONNET = "claude-sonnet-5-5"
+HAIKU45 = "claude-haiku-4-5-20251001"
+HAIKU55 = "claude-haiku-5-5"
+
 ARMS: dict[str, Arm] = {
     a.name: a
     for a in (
-        Arm("claude-sonnet", "claude", "sonnet"),  # run base1's name for sonnet-short
-        Arm("sonnet-short", "claude", "sonnet"),
-        Arm("sonnet-long", "claude", "sonnet", "long"),
-        Arm("sonnet-long-hook", "claude", "sonnet", "long", hook=True),
-        Arm("haiku-short", "claude", "haiku"),
-        Arm("haiku-long", "claude", "haiku", "long"),
-        Arm("haiku-long-hook", "claude", "haiku", "long", hook=True),
-        Arm("haiku-short-hook", "claude", "haiku", hook=True),  # hook pilot only
+        # Run base1 used the alias `sonnet` (it resolved to claude-sonnet-5-5); report it as
+        # sonnet-short.
+        Arm("claude-sonnet", "claude", "sonnet"),
+        Arm("sonnet-short", "claude", SONNET),
+        Arm("sonnet-long", "claude", SONNET, "long"),
+        Arm("sonnet-long-hook", "claude", SONNET, "long", hook=True),
+        # Run p2's haiku45 arms used the alias `haiku`, which resolved to HAIKU45.
+        Arm("haiku45-short", "claude", HAIKU45),
+        Arm("haiku45-long", "claude", HAIKU45, "long"),
+        Arm("haiku45-long-hook", "claude", HAIKU45, "long", hook=True),
+        Arm("haiku45-short-hook", "claude", HAIKU45, hook=True),  # hook pilot only
+        Arm("haiku55-short", "claude", HAIKU55),
+        Arm("haiku55-long", "claude", HAIKU55, "long"),
+        Arm("haiku55-long-hook", "claude", HAIKU55, "long", hook=True),
         Arm("codex", "codex"),
     )
 }
@@ -123,6 +133,7 @@ class Trial:
     task: Task
     rep: int
     codex_home: Path | None = None  # a separate CODEX_HOME, so ~/.codex/AGENTS.md stays out
+    ruleproof: FrozenRuleproof | None = None  # the build the Stop hook runs (hook arms only)
 
     @property
     def key(self) -> str:
@@ -234,13 +245,82 @@ def user_claude_md() -> str:
     return (Path.home() / ".claude" / "CLAUDE.md").as_posix()
 
 
-def hook_command(rules: Path, base: str) -> str:
-    # --no-sync: trials run in parallel and must not re-sync the shared ruleproof venv.
-    project = BENCH.parent.as_posix()
-    return (
-        f'uv run --no-sync --project "{project}" ruleproof hook claude-stop '
-        f'--rules "{rules.as_posix()}" --base {base}'
+@dataclass(frozen=True)
+class FrozenRuleproof:
+    """A checkout of one ruleproof commit with its own venv, so hook runs never see
+    half-edited code from the working tree."""
+
+    commit: str
+    root: Path
+
+
+def freeze_ruleproof(ref: str) -> FrozenRuleproof:
+    project = BENCH.parent
+    commit = git(project, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+    root = WORK_ROOT / f"ruleproof-{commit[:12]}"
+    if not (root / ".git").exists():
+        rmtree(root)
+        git(project, "worktree", "add", "--detach", str(root), commit)
+    head = git(root, "rev-parse", "HEAD").strip()
+    if head != commit or git(root, "status", "--porcelain", "--untracked-files=no").strip():
+        sys.exit(f"error: {root} is not a clean checkout of {commit}")
+    uv = resolve_exe("uv")
+    subprocess.run(
+        [uv, "sync", "--frozen", "--project", str(root)],
+        check=True,
+        capture_output=True,
+        env=child_env(),
     )
+    for spec in HOOKS.values():
+        res = subprocess.run(
+            [
+                uv,
+                "run",
+                "--no-sync",
+                "--project",
+                str(root),
+                "ruleproof",
+                "hook",
+                spec.name,
+                "--help",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env(),
+        )
+        needed = ["--rules", "--base"] if spec.base else ["--rules"]
+        if res.returncode != 0 or any(opt not in res.stdout for opt in needed):
+            sys.exit(f"error: ruleproof {commit[:12]} has no `hook {spec.name} {' '.join(needed)}`")
+    return FrozenRuleproof(commit, root)
+
+
+# Claude Code hook event -> ruleproof hook. PreToolUse prevents (denies a forbidden command,
+# edit or tool before it runs); Stop repairs (blocks finishing while rules fail).
+@dataclass(frozen=True)
+class HookSpec:
+    name: str  # `ruleproof hook <name>`
+    matcher: str | None  # PreToolUse tool-name matcher; Stop hooks take none
+    base: bool  # pass --base <initial sha>
+    timeout_s: int  # generous: `uv run` adds startup time on every call
+
+
+HOOKS = {
+    "PreToolUse": HookSpec(
+        "claude-pretool", "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit", False, 30
+    ),
+    "Stop": HookSpec("claude-stop", None, True, 120),
+}
+
+
+def hook_command(ruleproof: FrozenRuleproof, spec: HookSpec, rules: Path, base: str) -> str:
+    # --no-sync: trials run in parallel and must not re-sync the shared venv.
+    cmd = (
+        f'uv run --no-sync --project "{ruleproof.root.as_posix()}" ruleproof hook {spec.name} '
+        f'--rules "{rules.as_posix()}"'
+    )
+    return f"{cmd} --base {base}" if spec.base else cmd
 
 
 def verify_sources(variant: str) -> None:
@@ -382,18 +462,33 @@ def make_workspace(trial: Trial) -> str:
     git(ws, "commit", "-q", "-m", "Initial commit")
     base = git(ws, "rev-parse", "HEAD").strip()
     if trial.arm.hook:
-        install_hook(ws, trial.arm.rules, base)
+        assert trial.ruleproof is not None, "hook arms need a frozen ruleproof build"
+        frozen = trial.ruleproof
+        install_hooks(
+            ws, {ev: hook_command(frozen, h, trial.arm.rules, base) for ev, h in HOOKS.items()}
+        )
     return base
 
 
-def install_hook(ws: Path, rules: Path, base: str) -> None:
-    """Add the Stop hook as local (uncommitted, git-excluded) project settings.
+def install_hooks(ws: Path, commands: dict[str, str]) -> None:
+    """Register ``{hook event: command}`` as local (uncommitted, git-excluded) project settings.
 
-    It needs the initial commit's sha, so it cannot be part of that commit; as an excluded
-    local file it stays out of the diff that ruleproof and the patch see.
+    They need the initial commit's sha, so they cannot be part of that commit; as an excluded
+    local file they stay out of the diff that ruleproof and the patch see.
     """
-    hook = {"type": "command", "command": hook_command(rules, base), "timeout": 120}
-    settings = {"hooks": {"Stop": [{"hooks": [hook]}]}}
+    settings = {
+        "hooks": {
+            event: [
+                {
+                    **({"matcher": HOOKS[event].matcher} if HOOKS[event].matcher else {}),
+                    "hooks": [
+                        {"type": "command", "command": cmd, "timeout": HOOKS[event].timeout_s}
+                    ],
+                }
+            ]
+            for event, cmd in commands.items()
+        }
+    }
     (ws / ".claude").mkdir(exist_ok=True)
     (ws / ".claude" / "settings.local.json").write_text(
         json.dumps(settings, indent=2) + "\n", encoding="utf-8", newline="\n"
@@ -480,31 +575,58 @@ def codex_facts(transcript: Path) -> dict[str, Any]:
     return facts
 
 
+_RULE_IN_REASON = re.compile(r"^\s*(?:\d+\.|-)?\s*([a-z][\w.-]*[a-z0-9]):", re.MULTILINE)
+
+
+def _rule_ids(reason: str) -> list[str]:
+    return [r for r in _RULE_IN_REASON.findall(reason) if r != "ruleproof"]
+
+
 def hook_facts(transcript: Path) -> dict[str, Any]:
-    """Count Stop hook runs and blocks from ``--include-hook-events`` records."""
-    runs = blocks = failures = 0
-    blocked_rules: list[str] = []
+    """Count hook runs, Stop blocks and PreToolUse denials from ``--include-hook-events``."""
+    facts: dict[str, Any] = {
+        "hook_runs": 0,  # Stop
+        "hook_blocks": 0,
+        "hook_blocked_rules": [],
+        "pretool_runs": 0,
+        "pretool_denies": 0,
+        "pretool_denied_rules": [],
+        "hook_failures": 0,  # either hook exited non-zero or reported an error
+    }
     for obj in json_lines(transcript):
-        if obj.get("subtype") != "hook_response" or obj.get("hook_event") != "Stop":
+        event = obj.get("hook_event")
+        if obj.get("subtype") != "hook_response" or event not in HOOKS:
             continue
-        runs += 1
         output = obj.get("output") or obj.get("stdout") or ""
         try:
             decision = json.loads(output) if output.strip() else {}
         except ValueError:
             decision = {}
-        if isinstance(decision, dict) and decision.get("decision") == "block":
-            blocks += 1
-            reason = str(decision.get("reason", ""))
-            blocked_rules += re.findall(r"^\s*\d+\.\s+([\w.-]+):", reason, re.MULTILINE)
-        elif obj.get("exit_code") not in (0, None) or obj.get("outcome") not in ("success", None):
-            failures += 1
-    return {
-        "hook_runs": runs,
-        "hook_blocks": blocks,
-        "hook_failures": failures,
-        "hook_blocked_rules": blocked_rules,
-    }
+        if not isinstance(decision, dict):
+            decision = {}
+        specific = decision.get("hookSpecificOutput")
+        specific = specific if isinstance(specific, dict) else {}
+        failed = obj.get("exit_code") not in (0, None) or obj.get("outcome") not in (
+            "success",
+            None,
+        )
+        if event == "Stop":
+            facts["hook_runs"] += 1
+            if decision.get("decision") == "block":
+                facts["hook_blocks"] += 1
+                reason = str(decision.get("reason", ""))
+                facts["hook_blocked_rules"] += _rule_ids(reason)
+                continue
+        else:
+            facts["pretool_runs"] += 1
+            if specific.get("permissionDecision") == "deny" or decision.get("decision") == "block":
+                facts["pretool_denies"] += 1
+                reason = str(specific.get("permissionDecisionReason") or decision.get("reason"))
+                facts["pretool_denied_rules"] += _rule_ids(reason)
+                continue
+        if failed:
+            facts["hook_failures"] += 1
+    return facts
 
 
 def copy_claude_session(session_id: str, ws: Path, out: Path) -> str | None:
@@ -617,6 +739,8 @@ def run_trial(trial: Trial, versions: dict[str, str]) -> dict[str, Any]:
     started = time.time()
     codex_home = trial.codex_home if trial.arm.agent == "codex" else None
     meta["codex_home"] = "separate" if codex_home else "user"
+    if trial.arm.hook and trial.ruleproof is not None:
+        meta["ruleproof_commit"] = trial.ruleproof.commit
     env = child_env(codex_home)
     proc = run_proc(
         argv, trial.ws, trial.task.prompt, transcript, out / "stderr.txt", TRIAL_TIMEOUT_S, env
@@ -665,6 +789,10 @@ def trial_error(meta: dict[str, Any], transcript: Path) -> str | None:
             return "no result event"
         if meta.get("is_error") and subtype not in ("error_max_budget_usd", "error_max_turns"):
             return f"result {subtype}"
+        wanted = meta.get("model_alias")
+        if wanted and wanted.startswith("claude-") and meta.get("model") != wanted:
+            # An explicit model id must be honoured, not silently replaced.
+            return f"asked for model {wanted}, transcript reports {meta.get('model')}"
     elif meta.get("is_error"):
         return "codex: " + "; ".join(meta.get("errors", []))[:300]
     if transcript.stat().st_size == 0:
@@ -724,6 +852,10 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="run a pilot prompt instead of the tasks (default: the isolation pilot)",
     )
     p.add_argument(
+        "--ruleproof-ref",
+        help="ruleproof commit the hook arms run, from a frozen worktree (required for them)",
+    )
+    p.add_argument(
         "--codex-home",
         help="CODEX_HOME for the codex arm (logged in, no AGENTS.md); default: the user's",
     )
@@ -759,6 +891,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         stray = [n for n in ("AGENTS.md", "AGENTS.override.md") if (codex_home / n).exists()]
         if stray:
             sys.exit(f"error: {codex_home} contains {', '.join(stray)}")
+    frozen = None
+    if any(a.hook for a in arms):
+        if not args.ruleproof_ref:
+            sys.exit("error: hook arms need --ruleproof-ref (a commit to freeze ruleproof at)")
+        frozen = freeze_ruleproof(args.ruleproof_ref)
+        log(f"hook arms run ruleproof {frozen.commit} from {frozen.root}")
     for variant in sorted({a.variant for a in arms}):
         verify_sources(variant)
     above = instruction_files_above(WORK_ROOT)
@@ -767,7 +905,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     versions = {a.agent: agent_version(a.agent) for a in arms}
     trials = [
-        Trial(args.run_id, arm, task, rep, codex_home)
+        Trial(args.run_id, arm, task, rep, codex_home, frozen if arm.hook else None)
         for rep in range(1, args.reps + 1)
         for task in tasks
         for arm in arms

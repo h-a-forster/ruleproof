@@ -1,4 +1,5 @@
 {
+  "arm": "claude-sonnet",
   "trial": {
     "run_id": "base1",
     "arm": "claude-sonnet",
@@ -21,6 +22,19 @@
     "committed": false,
     "base_sha": "09b4795a47ad1d857a9a804218286dc2e9c19897",
     "codex_home": "user",
+    "model_alias": null,
+    "variant": null,
+    "rules": null,
+    "hook": null,
+    "hook_runs": null,
+    "hook_blocks": null,
+    "hook_failures": null,
+    "hook_blocked_rules": null,
+    "pretool_runs": null,
+    "pretool_denies": null,
+    "pretool_denied_rules": null,
+    "arm_renamed_from": null,
+    "ruleproof_commit": null,
     "error": null
   },
   "note": null,
@@ -190,7 +204,7 @@
         "severity": "error",
         "summary": "claims backed by commands: tests (exit 0)",
         "description": "Don't report a change as done with failing or unrun tests.",
-        "source": "AGENTS.md:35",
+        "source": "AGENTS.md:34",
         "origin": "<bench>/rules.toml:102",
         "evidence": [
           {

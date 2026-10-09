@@ -126,7 +126,7 @@ exit code) or `skip` (an input is missing). Full reference: [docs/rules.md](docs
 | --- | --- | --- |
 | Claude Code | `~/.claude/projects/**` session files, subagents, `claude -p --output-format stream-json` | Exit codes, edits, subagent work merged by time. |
 | Codex CLI | `~/.codex/sessions/**` rollouts, `codex exec --json` | Current item records and older formats, including code-mode cells. |
-| Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | Best effort: no exit codes in some versions. |
+| Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | Best effort: built from the documented format, not yet tested on real sessions. |
 | Anything else | ruleproof JSONL | One event per line; see [docs/architecture.md](docs/architecture.md). |
 
 `ruleproof sessions` lists the sessions recorded for a repo. `ruleproof timeline` prints one, or

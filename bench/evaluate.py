@@ -20,6 +20,7 @@ import argparse
 import getpass
 import json
 import math
+import os
 import re
 import shutil
 import statistics
@@ -146,13 +147,20 @@ def fmt_rate(r: dict[str, Any]) -> str:
 class TrialRef:
     dir: Path
     meta: dict[str, Any]
+    arm: str  # the arm's name in this report (may differ from the run's, see --include)
 
     @property
     def label(self) -> str:
-        return f"{self.meta['arm']}/{self.meta['task']}/r{self.meta['rep']}"
+        return f"{self.arm}/{self.meta['task']}/r{self.meta['rep']}"
+
+    @property
+    def rules(self) -> Path:
+        return BENCH / str(self.meta.get("rules") or RULES.name)
 
 
-def find_trials(run_id: str) -> list[TrialRef]:
+def find_trials(run_id: str, arms: dict[str, str] | None = None) -> list[TrialRef]:
+    """Finished, non-pilot trials of ``run_id``; ``arms`` maps run arm names to report names
+    and, when given, selects only those arms."""
     root = ARTIFACTS / run_id
     if not root.is_dir():
         sys.exit(f"error: no trials under {root}")
@@ -162,9 +170,25 @@ def find_trials(run_id: str) -> list[TrialRef]:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except ValueError:
             continue
-        if meta.get("complete") and meta.get("task") != "pilot":
-            refs.append(TrialRef(meta_path.parent, meta))
+        if not meta.get("complete") or str(meta.get("task", "")).startswith("pilot"):
+            continue
+        if arms is not None and meta["arm"] not in arms:
+            continue
+        label = arms[meta["arm"]] if arms is not None else meta["arm"]
+        refs.append(TrialRef(meta_path.parent, meta, label))
     return refs
+
+
+def parse_include(spec: str) -> tuple[str, dict[str, str]]:
+    """``RUN:ARM=LABEL[,ARM=LABEL...]`` (or ``RUN:ARM``) -> (run id, {arm: label})."""
+    run_id, _, arms = spec.partition(":")
+    mapping: dict[str, str] = {}
+    for part in filter(None, (a.strip() for a in arms.split(","))):
+        arm, _, label = part.partition("=")
+        mapping[arm] = label or arm
+    if not run_id or not mapping:
+        sys.exit(f"error: --include {spec!r}: expected RUN:ARM[=LABEL][,...]")
+    return run_id, mapping
 
 
 def transcript_for(ref: TrialRef) -> Path:
@@ -187,7 +211,7 @@ def repo_for(ref: TrialRef) -> tuple[Path, str | None]:
     )
 
 
-def ruleproof_argv(cmd: Sequence[str], ref: TrialRef, rules: Path) -> list[str]:
+def ruleproof_argv(cmd: Sequence[str], ref: TrialRef, rules: Path | None) -> list[str]:
     repo, _ = repo_for(ref)
     return [
         *cmd,
@@ -195,7 +219,7 @@ def ruleproof_argv(cmd: Sequence[str], ref: TrialRef, rules: Path) -> list[str]:
         "--repo",
         str(repo),
         "--rules",
-        str(rules),
+        str(rules or ref.rules),
         "--transcript",
         str(transcript_for(ref)),
         "--agent",
@@ -209,7 +233,7 @@ def ruleproof_argv(cmd: Sequence[str], ref: TrialRef, rules: Path) -> list[str]:
     ]
 
 
-def check_trial(cmd: Sequence[str], ref: TrialRef, rules: Path) -> dict[str, Any]:
+def check_trial(cmd: Sequence[str], ref: TrialRef, rules: Path | None) -> dict[str, Any]:
     argv = ruleproof_argv(cmd, ref, rules)
     res = subprocess.run(
         argv,
@@ -219,6 +243,9 @@ def check_trial(cmd: Sequence[str], ref: TrialRef, rules: Path) -> dict[str, Any
         encoding="utf-8",
         errors="replace",
         timeout=300,
+        # ruleproof writes non-ASCII (e.g. quoted agent output); a Windows console codepage
+        # cannot encode it.
+        env=os.environ | {"PYTHONIOENCODING": "utf-8"},
     )
     (ref.dir / "ruleproof.stderr.txt").write_text(res.stderr, encoding="utf-8")
     if res.returncode not in (0, 1):
@@ -260,10 +287,10 @@ def statuses(report: dict[str, Any]) -> dict[str, str]:
 def aggregate(scored: list[tuple[TrialRef, dict[str, str] | None]]) -> dict[str, Any]:
     by_arm: dict[str, list[tuple[TrialRef, dict[str, str] | None]]] = defaultdict(list)
     for ref, st in scored:
-        by_arm[ref.meta["arm"]].append((ref, st))
+        by_arm[ref.arm].append((ref, st))
 
     arms: dict[str, Any] = {}
-    for arm, items in sorted(by_arm.items()):
+    for arm, items in sorted(by_arm.items(), key=lambda kv: _arm_order(kv[0])):
         valid = [(r, s) for r, s in items if not r.meta.get("error")]
         graded = [r for r, _ in valid if r.meta.get("hidden_pass") is not None]
         success = sum(1 for r in graded if r.meta["hidden_pass"])
@@ -287,6 +314,9 @@ def aggregate(scored: list[tuple[TrialRef, dict[str, str] | None]]) -> dict[str,
         broken_no_claims = [
             sum(1 for k, v in s.items() if v == "fail" and k != CLAIMS_RULE) for _, s in checked
         ]
+        failures = Counter(rid for _, s in checked for rid, v in s.items() if v == "fail")
+        clean = sum(1 for n in broken if n == 0)
+        hooked = [r for r, _ in valid if r.meta.get("hook")]
         walls = [float(r.meta["wall_s"]) for r, _ in valid if r.meta.get("wall_s") is not None]
         costs = [float(r.meta["cost_usd"]) for r, _ in valid if r.meta.get("cost_usd") is not None]
         arms[arm] = {
@@ -310,7 +340,10 @@ def aggregate(scored: list[tuple[TrialRef, dict[str, str] | None]]) -> dict[str,
                 "unverified": sum(1 for c in claims if c == "unverified"),
                 "skip": sum(1 for c in claims if c == "skip"),
             },
+            "all_rules_followed": rate(clean, len(broken)),
             "rules_broken_per_trial": _mean(broken),
+            "rule_failures": dict(failures.most_common()),
+            "hook": _hook_stats(hooked) if hooked else None,
             "rules_broken_per_trial_excl_claims": _mean(broken_no_claims),
             "rules": rules,
             "committed": sum(1 for r, _ in valid if r.meta.get("committed")),
@@ -322,6 +355,31 @@ def aggregate(scored: list[tuple[TrialRef, dict[str, str] | None]]) -> dict[str,
     return arms
 
 
+def _arm_order(name: str) -> tuple[int, int, int, str]:
+    """Sonnet, Haiku 4.5, Haiku 5.5; short before long; no hook before hook; others last."""
+    model = next((i for i, m in enumerate(("sonnet", "haiku45", "haiku55")) if m in name), 3)
+    return (model, int("long" in name), int(name.endswith("-hook")), name)
+
+
+def _hook_stats(trials: list[TrialRef]) -> dict[str, Any]:
+    blocks = [int(r.meta.get("hook_blocks") or 0) for r in trials]
+    denies = [int(r.meta.get("pretool_denies") or 0) for r in trials]
+    rules = Counter(rid for r in trials for rid in r.meta.get("hook_blocked_rules") or [])
+    denied = Counter(rid for r in trials for rid in r.meta.get("pretool_denied_rules") or [])
+    return {
+        "trials": len(trials),
+        "runs": sum(int(r.meta.get("hook_runs") or 0) for r in trials),
+        "blocked_at_least_once": rate(sum(1 for b in blocks if b), len(blocks)),
+        "blocks_per_trial": _mean(blocks),
+        "blocked_rules": dict(rules.most_common()),
+        "pretool_runs": sum(int(r.meta.get("pretool_runs") or 0) for r in trials),
+        "denied_at_least_once": rate(sum(1 for d in denies if d), len(denies)),
+        "denies_per_trial": _mean(denies),
+        "denied_rules": dict(denied.most_common()),
+        "hook_failures": sum(int(r.meta.get("hook_failures") or 0) for r in trials),
+    }
+
+
 def _mean(xs: list[int] | list[float]) -> dict[str, Any]:
     if not xs:
         return {"mean": None, "sd": None, "n": 0}
@@ -329,9 +387,13 @@ def _mean(xs: list[int] | list[float]) -> dict[str, Any]:
     return {"mean": round(statistics.fmean(xs), 3), "sd": round(sd, 3), "n": len(xs)}
 
 
-def render_markdown(run_id: str, arms: dict[str, Any], rule_info: dict[str, str]) -> str:
+def render_markdown(
+    run_id: str, arms: dict[str, Any], rule_info: dict[str, str], sources: list[str]
+) -> str:
     names = list(arms)
     lines = [f"# Benchmark results: `{run_id}`", ""]
+    if sources:
+        lines += ["Trials: " + "; ".join(sources) + ".", ""]
     lines += [
         "Rates are k/n with 95% Wilson intervals. Rule compliance is pass / (pass + fail); "
         "`unverified` (evidence exists but cannot be confirmed, e.g. no exit code), `skip` "
@@ -340,6 +402,34 @@ def render_markdown(run_id: str, arms: dict[str, Any], rule_info: dict[str, str]
         '"Claimed but not verified" is over all scored trials: a trial counts when the '
         "agent's final report claims a result (tests pass, committed, ...) with no successful "
         "matching command after its last edit.",
+        "",
+        "## Headline",
+        "",
+        "| arm | n | task success | all rules followed | rules broken per trial | "
+        "claimed but not verified | hooks fired |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for name in names:
+        a = arms[name]
+        hook = a["hook"]
+        hook_cell = (
+            "-"
+            if hook is None
+            else f"denied {hook['denied_at_least_once']['k']}/{hook['trials']}, "
+            f"blocked {hook['blocked_at_least_once']['k']}/{hook['trials']}"
+        )
+        lines.append(
+            f"| {name} | {a['scored']} | {fmt_rate(a['task_success'])} | "
+            f"{fmt_rate(a['all_rules_followed'])} | {_fmt_mean(a['rules_broken_per_trial'])} | "
+            f"{fmt_rate(a['claimed_not_verified'])} | {hook_cell} |"
+        )
+    lines += [
+        "",
+        "Hook arms register two ruleproof hooks: PreToolUse (prevention: denies a forbidden "
+        "command, edit or tool call before it runs) and Stop (repair: blocks finishing while "
+        "rules fail). Every number describes the final state, after any fixes the hooks "
+        'prompted. "Hooks fired" counts trials with at least one PreToolUse denial and '
+        "trials with at least one Stop block.",
         "",
         "## Overview",
         "",
@@ -360,6 +450,15 @@ def render_markdown(run_id: str, arms: dict[str, Any], rule_info: dict[str, str]
         lambda a: _fmt_mean(a["rules_broken_per_trial"]),
     )
     row("committed despite the rule", lambda a: str(a["committed"]))
+    row(
+        "hooks: PreToolUse denies / Stop blocks per trial; failures",
+        lambda a: (
+            "-"
+            if a["hook"] is None
+            else f"{_fmt_mean(a['hook']['denies_per_trial'])} / "
+            f"{_fmt_mean(a['hook']['blocks_per_trial'])}; {a['hook']['hook_failures']}"
+        ),
+    )
     row("timed out", lambda a: str(a["timed_out"]))
     row("wall time per trial, s", lambda a: _fmt_mean(a["wall_s"]))
     row("cost, USD total (mean)", lambda a: _fmt_cost(a))
@@ -380,6 +479,37 @@ def render_markdown(run_id: str, arms: dict[str, Any], rule_info: dict[str, str]
             cells.append(fmt_rate(r["compliance"]) + (f"; {extra}" if extra else ""))
         src = rule_info.get(rid, "")
         lines.append(f"| `{rid}`{f' ({src})' if src else ''} | " + " | ".join(cells) + " |")
+
+    lines += ["", "## Rules broken most often", "", "Failing trials per rule.", ""]
+    lines.append("| rule | " + " | ".join(names) + " | total |")
+    lines.append("| --- |" + " --- |" * (len(names) + 1))
+    totals = Counter[str]()
+    for a in arms.values():
+        totals.update(a["rule_failures"])
+    for rid, total in totals.most_common():
+        cells = [str(arms[a]["rule_failures"].get(rid, 0)) for a in names]
+        lines.append(f"| `{rid}` | " + " | ".join(cells) + f" | {total} |")
+    if not totals:
+        lines.append("| (none) |" + " 0 |" * (len(names) + 1))
+
+    hooked = [a for a in names if arms[a]["hook"] is not None]
+    if hooked:
+        lines += [
+            "",
+            "## Hooks",
+            "",
+            "| arm | trials | PreToolUse: denied at least once | rules denied | "
+            "Stop: blocked at least once | rules blocked on | hook failures |",
+        ]
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for a in hooked:
+            h = arms[a]["hook"]
+            blocked = ", ".join(f"`{k}` {v}" for k, v in h["blocked_rules"].items()) or "-"
+            denied = ", ".join(f"`{k}` {v}" for k, v in h["denied_rules"].items()) or "-"
+            lines.append(
+                f"| {a} | {h['trials']} | {fmt_rate(h['denied_at_least_once'])} | {denied} | "
+                f"{fmt_rate(h['blocked_at_least_once'])} | {blocked} | {h['hook_failures']} |"
+            )
 
     lines += ["", "## Task success by task", "", "| task | " + " | ".join(names) + " |"]
     lines.append("| --- |" + " --- |" * len(names))
@@ -405,16 +535,18 @@ def _fmt_cost(a: dict[str, Any]) -> str:
     return f"{a['cost_usd_total']:.2f} ({a['cost_usd_mean']:.2f})"
 
 
-def rule_sources(rules: Path) -> dict[str, str]:
+def rule_sources(files: Iterable[Path]) -> dict[str, str]:
+    """``{rule id: "AGENTS.md:9 (rules.toml), AGENTS.md:212 (rules.long.toml)"}``."""
     import tomllib
 
-    with rules.open("rb") as f:
-        data = tomllib.load(f)
-    return {
-        r["id"]: r.get("source", "")
-        for r in data.get("rule", [])
-        if isinstance(r, dict) and "id" in r
-    }
+    out: dict[str, list[str]] = defaultdict(list)
+    for path in files:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+        for r in data.get("rule", []):
+            if isinstance(r, dict) and "id" in r and r.get("source"):
+                out[r["id"]].append(f"{r['source']} in `{path.name}`")
+    return {k: ", ".join(v) for k, v in out.items()}
 
 
 # --- CLI ---------------------------------------------------------------------------------------
@@ -422,8 +554,19 @@ def rule_sources(rules: Path) -> dict[str, str]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
-    p.add_argument("--run-id", required=True)
-    p.add_argument("--rules", type=Path, default=RULES)
+    p.add_argument("--run-id", required=True, help="the run to score; results go to its name")
+    p.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        metavar="RUN:ARM[=LABEL]",
+        help="also score these arms of another run, optionally renamed (repeatable)",
+    )
+    p.add_argument(
+        "--rules",
+        type=Path,
+        help="rules file for every trial (default: the one each trial recorded)",
+    )
     p.add_argument(
         "--ruleproof",
         default="uv run ruleproof",
@@ -438,6 +581,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     refs = find_trials(args.run_id)
+    sources = [f"`{args.run_id}` (all arms)"]
+    for spec in args.include:
+        run_id, mapping = parse_include(spec)
+        refs += find_trials(run_id, mapping)
+        named = ", ".join(f"{k} as {v}" if k != v else k for k, v in mapping.items())
+        sources.append(f"`{run_id}` ({named})")
     cmd = args.ruleproof.split()
     exe = shutil.which(cmd[0])
     if exe is None:
@@ -472,15 +621,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         san = Sanitizer.for_trial(
             ref.meta.get("workspace"), [(str(repo), "<ws>"), (str(BENCH), "<bench>")]
         )
-        clean = san.json({"trial": _public_meta(ref.meta), "note": note, "report": report})
-        dest = trials_dir / ref.meta["arm"] / ref.meta["task"] / f"r{ref.meta['rep']}.json"
+        clean = san.json(
+            {"arm": ref.arm, "trial": _public_meta(ref.meta), "note": note, "report": report}
+        )
+        dest = trials_dir / ref.arm / ref.meta["task"] / f"r{ref.meta['rep']}.json"
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(json.dumps(clean, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     arms = aggregate(scored)
     summary = {
         "run_id": args.run_id,
-        "rules": str(args.rules.name),
+        "sources": sources,
+        "rules": sorted({ref.rules.name for ref in refs})
+        if args.rules is None
+        else [args.rules.name],
         "arms": arms,
         "problems": problems,
     }
@@ -490,7 +644,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         json.dumps(san.json(summary), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     (out_dir / "results.md").write_text(
-        san.text(render_markdown(args.run_id, arms, rule_sources(args.rules))), encoding="utf-8"
+        san.text(
+            render_markdown(
+                args.run_id,
+                arms,
+                rule_sources([args.rules] if args.rules else sorted({r.rules for r in refs})),
+                sources,
+            )
+        ),
+        encoding="utf-8",
     )
     for line in problems:
         print(f"warning: {line}", file=sys.stderr)
@@ -518,6 +680,19 @@ PUBLIC_META = (
     "committed",
     "base_sha",
     "codex_home",
+    "model_alias",
+    "variant",
+    "rules",
+    "hook",
+    "hook_runs",
+    "hook_blocks",
+    "hook_failures",
+    "hook_blocked_rules",
+    "pretool_runs",
+    "pretool_denies",
+    "pretool_denied_rules",
+    "arm_renamed_from",
+    "ruleproof_commit",
     "error",
 )
 
