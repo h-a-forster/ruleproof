@@ -1,0 +1,18 @@
+version = 1
+
+# Comments and blank lines between rules must not shift the cited lines.
+
+[[rule]]
+id = "no-backups"
+check = "demo-paths"
+description = "Don't create backup copies."
+source = "AGENTS.md:3"
+paths = ["*.bak", "*.orig"]
+
+[[rule]]
+id = "tests-run"
+check = "demo-all"
+severity = "warning"
+pattern = '\bpytest\b'
+flag = false
+limit = 3

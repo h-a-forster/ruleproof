@@ -140,3 +140,17 @@ def test_find_instruction_files(tmp_path: Path) -> None:
         "pkg/AGENTS.md",
         ".cursor/rules/style.mdc",
     ]
+
+
+def test_find_instruction_files_exclude(tmp_path: Path) -> None:
+    for rel in [
+        "AGENTS.md",
+        "examples/demo/AGENTS.md",
+        "tests/fixtures/x/CLAUDE.md",
+        "pkg/AGENTS.md",
+    ]:
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x", encoding="utf-8")
+    found = find_instruction_files(tmp_path, exclude=["examples/", "tests/fixtures/**", "pkg/*.md"])
+    assert [p.relative_to(tmp_path).as_posix() for p in found] == ["AGENTS.md"]

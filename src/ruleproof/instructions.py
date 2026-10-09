@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
+
+from ruleproof.paths import match_any
 
 INSTRUCTION_NAMES: frozenset[str] = frozenset(
     {"AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", "GEMINI.md"}
@@ -51,8 +54,14 @@ SKIP_DIRS: frozenset[str] = frozenset(
 )
 
 
-def find_instruction_files(repo: Path, max_depth: int = 8) -> list[Path]:
-    """Instruction files under ``repo``, sorted by repo-relative path (root first)."""
+def find_instruction_files(
+    repo: Path, max_depth: int = 8, exclude: Sequence[str] = ()
+) -> list[Path]:
+    """Instruction files under ``repo``, sorted by depth then repo-relative path.
+
+    ``exclude`` holds globs (see ``ruleproof.paths``) for files or directories to skip, such as
+    example projects and test fixtures that carry their own instruction files.
+    """
     found: set[Path] = set()
     for rel in ROOT_INSTRUCTION_PATHS:
         p = repo / rel
@@ -67,6 +76,10 @@ def find_instruction_files(repo: Path, max_depth: int = 8) -> list[Path]:
         if len(here.parts) - root_depth >= max_depth:
             dirnames[:] = []
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        if exclude:
+            rel_dir = here.relative_to(repo).as_posix()
+            prefix = "" if rel_dir == "." else rel_dir + "/"
+            dirnames[:] = [d for d in dirnames if not match_any(f"{prefix}{d}/", exclude)]
         for name in filenames:
             if name in INSTRUCTION_NAMES:
                 found.add(here / name)
@@ -75,4 +88,6 @@ def find_instruction_files(repo: Path, max_depth: int = 8) -> list[Path]:
         rel = p.relative_to(repo).as_posix()
         return (rel.count("/"), rel)
 
+    if exclude:
+        found = {p for p in found if not match_any(p.relative_to(repo).as_posix(), exclude)}
     return sorted(found, key=key)
