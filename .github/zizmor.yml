@@ -1,0 +1,6 @@
+# Major-version tags are pinned on purpose; Dependabot keeps them current.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": ref-pin

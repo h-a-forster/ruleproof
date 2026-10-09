@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruleproof hook claude-stop",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

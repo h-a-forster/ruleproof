@@ -1,0 +1,119 @@
+# Rules for the orders service. Each rule cites the AGENTS.md line it enforces.
+# A few more rules live next to their prose as <!-- ruleproof: ... --> annotations in AGENTS.md.
+version = 1
+
+# --- Diff rules: run against `git diff <base>` (CI, pre-commit, the Stop hook) ---
+
+[[rule]]
+id = "no-backup-files"
+description = "Don't create .bak, .orig or *_old.py copies; use git."
+source = "AGENTS.md:26"
+check = "forbid-change"
+actions = ["add"]
+paths = ["*.bak", "*.orig", "*_old.py", "*.before_*"]
+
+[[rule]]
+id = "small-changes"
+description = "Keep changes small. Split anything over 400 changed lines."
+source = "AGENTS.md:27"
+severity = "warning"
+check = "max-diff"
+max_lines = 400
+max_files = 25
+except = ["uv.lock", "orders/clients/payments/", "migrations/versions/"]
+
+[[rule]]
+id = "models-need-migration"
+description = "Every change to the database models needs a migration."
+source = "AGENTS.md:28"
+check = "require-change"
+if_changed = ["orders/models/**/*.py"]
+then_changed = ["migrations/versions/*.py"]
+except = ["orders/models/__init__.py"]
+
+[[rule]]
+id = "module-docstring"
+description = "New modules under orders/ start with a module docstring."
+source = "AGENTS.md:29"
+severity = "warning"
+check = "require-text"
+pattern = '^\s*[rR]?"""'
+paths = ["orders/**/*.py"]
+new_files_only = true
+
+[[rule]]
+id = "no-print"
+description = "Use logging, not print, in library code."
+source = "AGENTS.md:30"
+check = "forbid-text"
+pattern = '^\s*print\('
+paths = ["orders/**/*.py"]
+except = ["orders/cli.py"]
+
+[[rule]]
+id = "no-hardcoded-secrets"
+description = "Don't commit secrets."
+source = "AGENTS.md:31"
+check = "forbid-text"
+pattern = '''(api[_-]?key|secret|passw(or)?d|token)\s*[:=]\s*["'][^"'\s]{12,}["']|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----'''
+ignore_case = true
+except = ["tests/**", "*.md"]
+
+# --- Transcript rules: need the agent's session (local session, Stop hook, or CI transcript) ---
+
+[[rule]]
+id = "tests-before-done"
+description = "Run the tests after your last code change and before you say you are done."
+source = "AGENTS.md:15"
+check = "require-command"
+command = '\bpytest\b'
+must_succeed = true
+after_last_edit = true
+when_paths = ["orders/**", "tests/**", "migrations/**"]
+ignore_edit_paths = ["**/*.md", "docs/"]
+
+[[rule]]
+id = "honest-report"
+description = "If you could not run the tests, say so."
+source = "AGENTS.md:16"
+check = "claims"
+claims = ["tests", "lint", "types"]
+ignore_edit_paths = ["**/*.md", "docs/"]
+
+[[rule]]
+id = "no-dismissed-failures"
+description = "Don't wave away failing tests as unrelated; fix them or report them plainly."
+source = "AGENTS.md:15"
+severity = "warning"
+check = "forbid-message"
+pattern = '\b(pre-?existing|unrelated)\s+(test\s+)?failures?\b'
+ignore_case = true
+
+[[rule]]
+id = "stay-in-repo"
+description = "Only edit files inside this repository."
+source = "AGENTS.md:32"
+check = "forbid-edit"
+outside_repo = true
+
+[[rule]]
+id = "no-env-edits"
+description = "Settings come from environment variables; never write .env files."
+source = "AGENTS.md:31"
+check = "forbid-edit"
+paths = [".env", ".env.*"]
+
+[[rule]]
+id = "no-web"
+description = "Don't open browsers or fetch web pages while working."
+source = "AGENTS.md:33"
+severity = "warning"
+check = "forbid-tool"
+tool = '^(WebFetch|WebSearch|web_fetch|google_web_search|web_search)$'
+
+[[rule]]
+id = "no-skipped-hooks"
+description = "Never skip git hooks with --no-verify."
+source = "AGENTS.md:34"
+check = "forbid-command"
+command = '\bgit\s+(commit|push|merge|rebase)\b.*\s--no-verify\b'

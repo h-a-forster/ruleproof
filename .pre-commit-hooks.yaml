@@ -1,0 +1,19 @@
+- id: ruleproof-diff
+  name: ruleproof (diff rules)
+  description: Check staged and unstaged changes against the rules in ruleproof.toml and instruction-file annotations.
+  entry: ruleproof check --no-transcript --base HEAD
+  language: python
+  pass_filenames: false
+  always_run: true
+  require_serial: true
+  minimum_pre_commit_version: "3.2.0"
+
+- id: ruleproof-doctor
+  name: ruleproof doctor
+  description: Lint AGENTS.md / CLAUDE.md / GEMINI.md and agent config files.
+  entry: ruleproof doctor
+  language: python
+  pass_filenames: false
+  always_run: true
+  require_serial: true
+  minimum_pre_commit_version: "3.2.0"

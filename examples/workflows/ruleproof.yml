@@ -1,0 +1,40 @@
+# Check every pull request against the repo's agent rules and show results as code scanning alerts.
+# Copy to .github/workflows/ruleproof.yml.
+name: ruleproof
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ruleproof-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ruleproof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write # upload-sarif
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the diff base must be in the clone
+          persist-credentials: false
+
+      - name: ruleproof
+        id: ruleproof
+        uses: ruleproof/ruleproof@v0.1.0
+        with:
+          sarif: ${{ runner.temp }}/ruleproof.sarif
+
+      - name: Upload SARIF
+        # Forks get a read-only token, so code scanning upload only works for same-repo PRs.
+        if: always() && steps.ruleproof.outputs.report != '' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ runner.temp }}/ruleproof.sarif
+          category: ruleproof

@@ -1,0 +1,23 @@
+name: Feature request
+description: A new check, transcript format, doctor finding, or CLI option.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: rule
+    attributes:
+      label: The instruction you want to enforce
+      description: Quote the AGENTS.md / CLAUDE.md line (or a made-up equivalent).
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed check or behaviour
+      description: What evidence (diff, transcript) would decide pass or fail?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Can existing checks do it?
+      description: What you tried with `forbid-*` / `require-*` and why it falls short.

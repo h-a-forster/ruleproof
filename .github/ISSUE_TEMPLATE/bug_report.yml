@@ -1,0 +1,41 @@
+name: Bug report
+description: ruleproof crashed, gave a wrong result, or misread a transcript.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Transcripts can contain secrets and private code. Do not attach real transcripts.
+        Reduce the problem to a few synthetic lines instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command you ran, what you expected, and what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The rule (TOML or inline annotation) and a synthetic diff or transcript excerpt.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ruleproof version
+      description: Output of `ruleproof --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      options: [Not transcript-related, Claude Code, Codex CLI, Gemini CLI, Generic JSONL, Other]
+  - type: input
+    id: os
+    attributes:
+      label: OS and Python version
+      placeholder: Windows 11, Python 3.12

@@ -1,0 +1,244 @@
+name: ruleproof
+description: Check that a coding agent followed AGENTS.md / CLAUDE.md, using the diff and optionally the session transcript.
+author: ruleproof contributors
+branding:
+  icon: check-square
+  color: green
+
+inputs:
+  base:
+    description: >-
+      Git ref to diff against. Default: the pull request base SHA, the merge group base SHA,
+      the previous commit of a push (github.event.before), else HEAD~1.
+    required: false
+    default: ""
+  rules:
+    description: >-
+      Rules file (ruleproof.toml or pyproject.toml). Default: ruleproof.toml, then
+      [tool.ruleproof] in pyproject.toml, plus inline annotations.
+    required: false
+    default: ""
+  transcript:
+    description: >-
+      Path to an agent transcript, e.g. a Claude Code stream-json log. Empty: transcript rules
+      are skipped (--no-transcript).
+    required: false
+    default: ""
+  agent:
+    description: Transcript format (auto, claude-code, codex, gemini-cli, generic).
+    required: false
+    default: auto
+  fail-on:
+    description: Lowest severity that fails the step (error, warning, info, never).
+    required: false
+    default: error
+  strict:
+    description: Treat `unverified` results as failures.
+    required: false
+    default: "false"
+  doctor:
+    description: Also run `ruleproof doctor` on the instruction files.
+    required: false
+    default: "true"
+  sarif:
+    description: When set, also write a SARIF report to this path (for github/codeql-action/upload-sarif).
+    required: false
+    default: ""
+  version:
+    description: >-
+      ruleproof version to install from PyPI (e.g. 0.1.0). Empty: install from the action's own
+      checkout, so the version matches the ref in `uses:`.
+    required: false
+    default: ""
+  python-version:
+    description: Python used to run ruleproof (3.11 or newer). It is not added to PATH.
+    required: false
+    default: "3.13"
+  working-directory:
+    description: Repository directory to check.
+    required: false
+    default: "."
+
+outputs:
+  failed:
+    description: >-
+      Number of failing results (check + doctor) at or above `fail-on` (unverified included
+      with `strict`). With `fail-on: never`, every failing result is counted.
+    value: ${{ steps.result.outputs.failed }}
+  report:
+    description: Path to the JSON report of `ruleproof check`.
+    value: ${{ steps.check.outputs.report }}
+  doctor-report:
+    description: Path to the JSON report of `ruleproof doctor` (empty when `doctor` is false).
+    value: ${{ steps.doctor.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python for ruleproof
+      id: python
+      uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+        update-environment: false
+
+    - name: Install ruleproof
+      id: install
+      shell: bash
+      env:
+        PY: ${{ steps.python.outputs.python-path }}
+        RULEPROOF_VERSION: ${{ inputs.version }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        if [[ -n "$RULEPROOF_VERSION" && ! "$RULEPROOF_VERSION" =~ ^[0-9A-Za-z.+!-]+$ ]]; then
+          echo "::error title=ruleproof::invalid version input: $RULEPROOF_VERSION"
+          exit 2
+        fi
+        venv="$RUNNER_TEMP/ruleproof-venv"
+        "$PY" -m venv "$venv"
+        if [[ -x "$venv/bin/python" ]]; then
+          vpy="$venv/bin/python"
+        else
+          vpy="$venv/Scripts/python.exe"
+        fi
+        if [[ -n "$RULEPROOF_VERSION" ]]; then
+          spec="ruleproof==$RULEPROOF_VERSION"
+        else
+          spec="$ACTION_PATH"
+        fi
+        "$vpy" -m pip install --quiet --disable-pip-version-check --no-input "$spec"
+        "$vpy" -m ruleproof --version
+        echo "python=$vpy" >> "$GITHUB_OUTPUT"
+
+    - name: Resolve base
+      id: base
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_BASE: ${{ inputs.base }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_BASE: ${{ github.event.pull_request.base.sha }}
+        MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+      run: |
+        base="$INPUT_BASE"
+        if [[ -z "$base" ]]; then
+          case "$EVENT_NAME" in
+            pull_request|pull_request_target) base="$PR_BASE" ;;
+            merge_group) base="$MERGE_GROUP_BASE" ;;
+            push)
+              if [[ -n "$PUSH_BEFORE" && ! "$PUSH_BEFORE" =~ ^0+$ ]]; then
+                base="$PUSH_BEFORE"
+              fi
+              ;;
+          esac
+        fi
+        base="${base:-HEAD~1}"
+        if [[ "$base" == -* ]]; then
+          echo "::error title=ruleproof::invalid base ref: $base"
+          exit 2
+        fi
+
+        has_base() { git rev-parse --verify --quiet "$base^{commit}" > /dev/null; }
+        if ! has_base && [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+          echo "Shallow clone without $base; fetching it (use actions/checkout with fetch-depth: 0 to skip this)."
+          if [[ "$base" =~ ^[0-9a-f]{40}$ ]]; then
+            git fetch --no-tags --quiet --depth=1 origin "$base" || true
+          fi
+          if ! has_base; then
+            git fetch --no-tags --quiet --unshallow origin || true
+          fi
+        fi
+        if ! has_base; then
+          echo "::error title=ruleproof::base '$base' is not in the clone. Check out with fetch-depth: 0 or set the base input."
+          exit 2
+        fi
+        echo "Diff base: $base"
+        echo "ref=$base" >> "$GITHUB_OUTPUT"
+
+    - name: ruleproof check
+      id: check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        RULEPROOF_PY: ${{ steps.install.outputs.python }}
+        BASE: ${{ steps.base.outputs.ref }}
+        RULES: ${{ inputs.rules }}
+        TRANSCRIPT: ${{ inputs.transcript }}
+        AGENT: ${{ inputs.agent }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        STRICT: ${{ inputs.strict }}
+        SARIF: ${{ inputs.sarif }}
+        PYTHONUTF8: "1"
+        PYTHONIOENCODING: utf-8
+      run: |
+        out="$RUNNER_TEMP/ruleproof"
+        mkdir -p "$out"
+        args=(check --base "$BASE")
+        if [[ -n "$RULES" ]]; then args+=(--rules "$RULES"); fi
+        if [[ -n "$TRANSCRIPT" ]]; then
+          args+=(--transcript "$TRANSCRIPT" --agent "$AGENT")
+        else
+          args+=(--no-transcript)
+        fi
+        if [[ "$STRICT" == "true" ]]; then args+=(--strict); fi
+
+        # Reports never fail on their own; the text run below decides the exit code.
+        rc=0
+        "$RULEPROOF_PY" -m ruleproof "${args[@]}" --format json --output "$out/check.json" --fail-on never || rc=$?
+        if [[ $rc -ne 0 ]]; then
+          echo "::error title=ruleproof::ruleproof check exited with $rc (configuration or usage error)"
+          exit "$rc"
+        fi
+        echo "report=$out/check.json" >> "$GITHUB_OUTPUT"
+        "$RULEPROOF_PY" -m ruleproof "${args[@]}" --format markdown --fail-on never >> "$GITHUB_STEP_SUMMARY"
+        if [[ -n "$SARIF" ]]; then
+          mkdir -p "$(dirname -- "$SARIF")"
+          "$RULEPROOF_PY" -m ruleproof "${args[@]}" --format sarif --output "$SARIF" --fail-on never
+        fi
+        rc=0
+        "$RULEPROOF_PY" -m ruleproof "${args[@]}" --format text --fail-on "$FAIL_ON" || rc=$?
+        echo "exit=$rc" >> "$GITHUB_OUTPUT"
+
+    - name: ruleproof doctor
+      id: doctor
+      if: inputs.doctor == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        RULEPROOF_PY: ${{ steps.install.outputs.python }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        PYTHONUTF8: "1"
+        PYTHONIOENCODING: utf-8
+      run: |
+        out="$RUNNER_TEMP/ruleproof"
+        rc=0
+        "$RULEPROOF_PY" -m ruleproof doctor --format json --output "$out/doctor.json" --fail-on never || rc=$?
+        if [[ $rc -ne 0 ]]; then
+          echo "::error title=ruleproof::ruleproof doctor exited with $rc (configuration or usage error)"
+          exit "$rc"
+        fi
+        echo "report=$out/doctor.json" >> "$GITHUB_OUTPUT"
+        "$RULEPROOF_PY" -m ruleproof doctor --format markdown --fail-on never >> "$GITHUB_STEP_SUMMARY"
+        rc=0
+        "$RULEPROOF_PY" -m ruleproof doctor --format text --fail-on "$FAIL_ON" || rc=$?
+        echo "exit=$rc" >> "$GITHUB_OUTPUT"
+
+    - name: Result
+      id: result
+      shell: bash
+      env:
+        RULEPROOF_PY: ${{ steps.install.outputs.python }}
+        CHECK_REPORT: ${{ steps.check.outputs.report }}
+        CHECK_EXIT: ${{ steps.check.outputs.exit }}
+        DOCTOR_REPORT: ${{ steps.doctor.outputs.report }}
+        DOCTOR_EXIT: ${{ steps.doctor.outputs.exit }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        STRICT: ${{ inputs.strict }}
+      run: |
+        failed="$("$RULEPROOF_PY" "$GITHUB_ACTION_PATH/.github/scripts/count_failed.py" "$FAIL_ON" "$STRICT" "$CHECK_REPORT" "$DOCTOR_REPORT")"
+        echo "failed=$failed" >> "$GITHUB_OUTPUT"
+        if [[ "${CHECK_EXIT:-0}" -ne 0 || "${DOCTOR_EXIT:-0}" -ne 0 ]]; then
+          echo "::error title=ruleproof::$failed rule(s) failed. See the job summary."
+          exit 1
+        fi

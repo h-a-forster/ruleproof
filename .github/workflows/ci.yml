@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_LOCKED: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run mypy
+
+  test:
+    name: Test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - run: uv run pytest
+
+  package:
+    name: Build and smoke-test the wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.11"
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Check metadata
+        run: uvx twine check --strict dist/*
+      - name: Install the wheel in a fresh venv
+        run: |
+          uv venv "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke/bin/python" dist/*.whl
+      - name: Smoke test
+        run: |
+          rp="$RUNNER_TEMP/smoke/bin/ruleproof"
+          "$rp" --version
+          "$rp" checks
+          # doctor exits 1 on findings; only a crash or usage error (2+) fails the smoke test.
+          rc=0
+          "$rp" doctor --repo . || rc=$?
+          test "$rc" -le 1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  dogfood:
+    name: Action (${{ matrix.os }})
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run ruleproof on this pull request
+        id: ruleproof
+        uses: ./
+        with:
+          sarif: ${{ runner.temp }}/ruleproof.sarif
+      - name: Check action outputs
+        if: always() && steps.ruleproof.outcome != 'skipped'
+        shell: bash
+        env:
+          FAILED: ${{ steps.ruleproof.outputs.failed }}
+          REPORT: ${{ steps.ruleproof.outputs.report }}
+          SARIF: ${{ runner.temp }}/ruleproof.sarif
+        run: |
+          echo "failed=$FAILED report=$REPORT"
+          test -n "$FAILED"
+          test -s "$REPORT"
+          test -s "$SARIF"
