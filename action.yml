@@ -46,8 +46,8 @@ inputs:
     default: ""
   version:
     description: >-
-      ruleproof version to install from PyPI (e.g. 0.1.0). Empty: install from the action's own
-      checkout, so the version matches the ref in `uses:`.
+      ruleproof release to install from this repository's tag (e.g. 0.1.0). Empty: install from
+      the action's own checkout, so the version matches the ref in `uses:`.
     required: false
     default: ""
   python-version:
@@ -121,7 +121,7 @@ runs:
           vpy="$venv/Scripts/python.exe"
         fi
         if [[ -n "$RULEPROOF_VERSION" ]]; then
-          spec="ruleproof==$RULEPROOF_VERSION"
+          spec="ruleproof @ git+https://github.com/h-a-forster/ruleproof@v${RULEPROOF_VERSION#v}"
         else
           spec="$ACTION_PATH"
         fi

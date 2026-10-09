@@ -42,7 +42,7 @@ Transcript rules are skipped unless you pass `transcript`: a CI run has no local
 | `strict` | `false` | `true` counts `unverified` results as failures. |
 | `doctor` | `true` | Also run `ruleproof doctor`. Its findings use the same `fail-on`. |
 | `sarif` | none | Also write a SARIF report to this path. |
-| `version` | empty (install from the action's checkout) | ruleproof version from PyPI, e.g. `0.1.0`. Empty installs the code at the ref in `uses:`. |
+| `version` | empty (install from the action's checkout) | ruleproof release to install from its git tag, e.g. `0.1.0`. Empty installs the code at the ref in `uses:`. |
 | `python-version` | `3.13` | Python used to run ruleproof (3.11+). |
 | `working-directory` | `.` | Repository to check. `rules`, `transcript` and `sarif` paths are relative to it. |
 

@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The action's `version` input installs that release from its git tag instead of PyPI.
+
 ## [0.1.0] - 2026-10-10
 
 First release.

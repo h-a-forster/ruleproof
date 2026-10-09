@@ -87,6 +87,6 @@ Maintainers:
    (`[Unreleased]` compares `vX.Y.Z...HEAD`; add `[X.Y.Z]`).
 3. Merge, then push the tag `vX.Y.Z`.
 
-The release workflow checks that the tag matches the version, publishes to PyPI with trusted
-publishing when the repository variable `PUBLISH_PYPI` is `true`, and creates the GitHub
-release from the changelog section.
+The release workflow checks that the tag matches the version, builds the wheel and sdist, and
+creates the GitHub release from the changelog section with both attached. ruleproof is installed
+from the git tag; it is not published to PyPI.
