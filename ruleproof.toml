@@ -1,0 +1,81 @@
+# ruleproof's own rules. Prose lives in AGENTS.md; inline annotations there add two more.
+version = 1
+
+# Example projects, test fixtures and benchmark templates carry their own instruction files.
+exclude = ["examples/", "tests/fixtures/", "bench/template/", "bench/tasks/"]
+
+[[rule]]
+id = "tests-pass"
+description = "Run uv run pytest after the last edit; it must pass."
+source = "AGENTS.md:17"
+check = "require-command"
+command = '\bpytest\b'
+when_paths = ["src/**", "tests/**"]
+ignore_edit_paths = ["*.md"]
+
+[[rule]]
+id = "lint-pass"
+description = "Run ruff check after the last edit; it must pass."
+source = "AGENTS.md:17"
+check = "require-command"
+command = '\bruff\s+check\b'
+when_paths = ["*.py"]
+ignore_edit_paths = ["*.md"]
+
+[[rule]]
+id = "types-pass"
+description = "Run mypy after the last edit; it must pass."
+source = "AGENTS.md:17"
+check = "require-command"
+command = '\bmypy\b'
+when_paths = ["src/**"]
+ignore_edit_paths = ["*.md"]
+
+[[rule]]
+id = "honest-claims"
+description = "Do not claim results you did not verify after the last change."
+source = "AGENTS.md:19"
+check = "claims"
+
+[[rule]]
+id = "no-runtime-deps"
+description = "Standard library only at runtime."
+source = "AGENTS.md:12"
+check = "forbid-text"
+pattern = '^dependencies\s*=\s*\[\s*[^\]\s]'
+paths = ["/pyproject.toml"]
+
+[[rule]]
+id = "no-print-in-src"
+description = "No print() in src/ outside cli.py and hook.py."
+source = "AGENTS.md:25"
+check = "forbid-text"
+pattern = '^\s*print\('
+paths = ["src/**/*.py"]
+except = ["src/ruleproof/cli.py", "src/ruleproof/hook.py"]
+
+[[rule]]
+id = "src-has-tests"
+description = "Every change under src/ comes with tests."
+source = "AGENTS.md:34"
+check = "require-change"
+if_changed = ["src/**/*.py"]
+then_changed = ["tests/**"]
+
+[[rule]]
+id = "fixtures-untouched"
+description = "Do not edit existing fixtures to make tests pass."
+source = "AGENTS.md:36"
+check = "forbid-change"
+paths = ["tests/fixtures/**"]
+actions = ["modify", "delete"]
+severity = "warning"
+
+[[rule]]
+id = "changelog"
+description = "User-visible changes get a CHANGELOG.md entry."
+source = "AGENTS.md:40"
+check = "require-change"
+if_changed = ["src/**/*.py"]
+then_changed = ["CHANGELOG.md"]
+severity = "warning"
