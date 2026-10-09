@@ -187,7 +187,41 @@ for code scanning. Pass `transcript:` to also check an agent run in CI, such as 
 
 ## Results
 
-<!-- RESULTS -->
+**Benchmark** ([bench/](bench/README.md)). Five everyday tasks on a small Python repo. Its
+AGENTS.md has nine checkable rules; no prompt mentions them. Claude Code runs headless with
+user-level config excluded, 3 runs per task, so n = 15 per row. "Short" is a 55-line AGENTS.md.
+"Long" puts the same rules inside a 12k-token team handbook.
+
+| Model | AGENTS.md | ruleproof hooks | Task done | All rules followed |
+| --- | --- | --- | ---: | ---: |
+| Sonnet 5.5 | short | | 15/15 | 15/15 |
+| Sonnet 5.5 | long | | 15/15 | 15/15 |
+| Sonnet 5.5 | long | PreToolUse + Stop | 15/15 | 15/15 |
+| Haiku 4.5 | short | | 15/15 | 12/15 |
+| Haiku 4.5 | long | | 14/15 | 5/15 |
+| Haiku 4.5 | long | PreToolUse + Stop | 15/15 | 15/15 |
+| Haiku 5.5 | short | | 15/15 | 15/15 |
+| Haiku 5.5 | long | | 15/15 | 11/15 |
+| Haiku 5.5 | long | PreToolUse + Stop | 15/15 | 13/15 |
+
+- The long handbook cost both Haiku models compliance. Sonnet held. The rules dropped were the
+  ones that ask for extra work or restraint: a changelog entry, leaving existing tests alone,
+  not committing.
+- With both hooks, Haiku 4.5 on the long handbook followed every rule in all 15 runs.
+  PreToolUse refused 3 `git commit`s and 5 edits to existing tests before they ran. The Stop
+  hook sent 6 runs back to add a changelog entry or verify a claim; all 6 were fixed.
+- Haiku 5.5's two remaining failures hit the $1 per-run budget cap. The cap ends the session
+  before the Stop hook can run.
+- Agents claimed passing tests in almost every run. Every claim was backed by a test run after
+  the last edit.
+- n is small, there is one repo, and the same authors wrote the rules and the checks. See
+  [threats to validity](bench/README.md#threats-to-validity).
+
+**Compile** ([bench/corpus/](bench/corpus/results.md)). `ruleproof compile` was run on 50 public
+instruction files (Next.js, VS Code, Deno, ruff, uv, Airflow, ...). Of 1,960 directives, 62
+became checks (3.2%), giving 70 rules. A hand review of 120 randomly sampled rules found 117
+correct (97.5%); the three errors are fixed. Coverage is low by design. Most directives are
+style or design guidance with no deterministic check, and `compile` skips what it cannot check.
 
 ## What it does not do
 

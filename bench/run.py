@@ -308,7 +308,7 @@ class HookSpec:
 
 HOOKS = {
     "PreToolUse": HookSpec(
-        "claude-pretool", "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit", False, 30
+        "claude-pretool", "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit", True, 30
     ),
     "Stop": HookSpec("claude-stop", None, True, 120),
 }

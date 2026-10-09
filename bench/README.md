@@ -125,9 +125,15 @@ working tree; `run.py` checks that the commit has both hooks. A Stop-hook pilot
 running anything) confirmed that the hook fires, that the agent receives the block reason as
 "Stop hook feedback" and keeps working, and that a second stop is let through. The same pilot
 and `pilot/hook-commit.md` confirmed that PreToolUse denies the `.bak` write and a `git commit`
-before they run. Eleven early hook
-trials ran against a working tree that was being edited; they were discarded and are not
-reported.
+before they run.
+
+The hook arms were run twice. The first run (`p2`, ruleproof `a8100113`) exposed a bug in the
+PreToolUse hook: it treated an edit to a test file the agent had created during the trial as
+editing an existing test, denied it, and so stopped agents fixing their own new tests (8 of 11
+test-file denials were of this kind). ruleproof `cbfaf628` gave `claude-pretool` a `--base`
+option, so that a file absent at the base commit counts as an add. The hook arms were re-run on
+that build (`p3`) and those are the hook rows reported below. Eleven hook trials run even earlier
+against a working tree that was being edited were discarded and are not reported anywhere.
 
 **Isolation.** The point is to measure the repo's instructions, not the machine owner's. A
 pilot (`run.py --pilot`) asks the agent to list every instruction file it was given and quote
@@ -154,8 +160,8 @@ python bench/run.py --pilot --arms sonnet-short --run-id pilot
 python bench/run.py --arms sonnet-short --tasks all --reps 3 --jobs 3 --run-id base1
 python bench/run.py --arms sonnet-long,haiku45-short,haiku45-long,haiku55-short,haiku55-long --tasks all --reps 3 --jobs 3 --run-id p2
 python bench/run.py --pilot bench/pilot/hook-block.md --arms haiku45-long-hook --run-id pilot-hook --ruleproof-ref <sha>   # also pilot/hook-commit.md
-python bench/run.py --arms sonnet-long-hook,haiku45-long-hook,haiku55-long-hook --tasks all --reps 3 --jobs 3 --run-id p2 --ruleproof-ref <sha>
-uv run python bench/evaluate.py --run-id p2 --include base1:claude-sonnet=sonnet-short --ruleproof "uv run --no-sync --project <frozen checkout> ruleproof"
+python bench/run.py --arms sonnet-long-hook,haiku45-long-hook,haiku55-long-hook --tasks all --reps 3 --jobs 3 --run-id p3 --ruleproof-ref cbfaf628
+uv run python bench/evaluate.py --run-id p3 --include base1:claude-sonnet=sonnet-short --include p2:sonnet-long,haiku45-short,haiku45-long,haiku55-short,haiku55-long --ruleproof "uv run --no-sync --project <frozen e12baf70 checkout> ruleproof"
 ```
 
 `run.py` is resumable: re-running with the same `--run-id` skips finished trials (errored ones
@@ -164,23 +170,30 @@ errored. For Codex: `$env:CODEX_HOME = "<dir>"; codex login`, then pass `--codex
 
 ## Results
 
-Full tables: `results/p2/results.md` (all arms, 135 trials) and `results/base1/results.md`
-(`sonnet-short` alone). Every arm was scored by the same ruleproof build (commit `a8100113`).
-Claude Code 2.1.287; models as reported in the transcripts: `claude-sonnet-5-5`,
-`claude-haiku-4-5-20251001`, `claude-haiku-5-5`. n = 15 per arm (5 tasks x 3 reps), no
-errored trials, no timeouts.
+Full tables: `results/p3/results.md` (all nine arms, 135 trials: hook arms from run `p3`,
+`sonnet-short` from `base1`, the other arms from `p2`). Every arm there is scored by the same
+ruleproof build, commit `e12baf70` (`e12baf70fc1eb02a83e436ea82ed55366aed7970`). The hooks in
+`p3` ran `cbfaf628`. Of the changes between the two, only the `claims` fix described under
+Threats to validity affects scoring, and it changes one trial. Re-scoring the non-hook arms gave
+the same numbers as with `a8100113`. `results/p2/` is kept as the
+record of the first hook run (scored with `a8100113`, including the hook trials hit by the bug
+above); `results/base1/` holds `sonnet-short` alone. Claude Code 2.1.287; models as reported in
+the transcripts: `claude-sonnet-5-5`, `claude-haiku-4-5-20251001`, `claude-haiku-5-5`. n = 15 per
+arm (5 tasks x 3 reps), no errored trials, no timeouts.
 
 | arm | task success | all rules followed | rules broken per trial | claimed but not verified | hooks fired (deny / block) |
 | --- | --- | --- | --- | --- | --- |
 | sonnet-short | 15/15 | 15/15 | 0.00 | 0/15 | - |
 | sonnet-long | 15/15 | 15/15 | 0.00 | 0/15 | - |
-| sonnet-long-hook | 15/15 | 14/15 | 0.07 | 0/15 | 1 / 1 |
+| sonnet-long-hook | 15/15 | 15/15 | 0.00 | 0/15 | 0 / 0 |
 | haiku45-short | 15/15 | 12/15 | 0.20 | 0/15 | - |
 | haiku45-long | 14/15 | 5/15 | 0.87 | 0/15 | - |
-| haiku45-long-hook | 15/15 | 15/15 | 0.00 | 0/15 | 5 / 11 |
+| haiku45-long-hook | 15/15 | 15/15 | 0.00 | 0/15 | 7 / 6 |
 | haiku55-short | 15/15 | 15/15 | 0.00 | 0/15 | - |
 | haiku55-long | 15/15 | 11/15 | 0.27 | 0/15 | - |
-| haiku55-long-hook | 15/15 | 12/15 | 0.40 | 1/15 | 4 / 4 |
+| haiku55-long-hook | 15/15 | 13/15 | 0.20 | 0/15 | 0 / 1 |
+
+"Hooks fired" counts trials with at least one PreToolUse denial / at least one Stop block.
 
 What we see, with the caveat that n is small:
 
@@ -190,28 +203,24 @@ What we see, with the caveat that n is small:
   extra work or restraint: a changelog entry (mostly on the refactor task), not touching
   existing test files, not committing.
 - **Smaller model.** Haiku 4.5 broke rules even with the short file; Haiku 5.5 did not.
-- **Unverified claims.** Agents claimed passing tests in nearly every trial, and the claim was
-  backed by a passing test run after the last edit in all but one trial (a Haiku 5.5 report of
-  "15 of 16 tests pass").
+- **Unverified claims.** Agents claimed passing tests in nearly every trial, and in every trial
+  the claim was backed by a test run after the last edit.
 - **Hooks.** With both hooks, Haiku 4.5 on the long handbook went from 5/15 to 15/15 clean
-  trials: the Stop hook blocked 11 trials (mostly for a missing changelog entry) and each was
-  repaired, and PreToolUse refused 3 commits and 3 edits of existing test files before they ran (plus 3
-  wrong denials, see below).
-  For Sonnet and Haiku 5.5 the hooks did not help, and this is partly ruleproof's fault: the
-  PreToolUse hook denied edits to test files **the agent had created itself during the trial**
-  (8 of its 11 test-file denials). It sees a `modify` of a file that exists now and cannot tell
-  it is new since the base commit. In the Sonnet trial that failed, and in one Haiku 5.5 trial,
-  the agent could not fix its own failing test and finished with a red suite. Treat the hook
-  rows for those two models as a measurement of that bug, not of the hooks' potential; they need
-  a re-run once the PreToolUse hook knows the base commit.
+  trials. PreToolUse refused 3 `git commit`s and 5 edits of existing test files before they ran
+  (7 trials); the Stop hook blocked 6 trials (5 for a missing changelog entry, 1 for an
+  unverified claim) and each was repaired. Every denial was correct: all denied test files exist
+  in the template. Sonnet needed no hook (nothing fired, 15/15 clean). For Haiku 5.5 the hooks
+  barely moved the result (11/15 to 13/15): both failing trials were ended by the budget cap,
+  which stops the session before the Stop hook can run.
 - **Budget cap.** Haiku 5.5 costs much more per trial than the others, and the $1.00 cap ended
-  5 of its long-handbook trials early (2 without hooks, 3 with). A capped trial is scored on the
+  6 of its long-handbook trials early (2 without hooks, 4 with). A capped trial is scored on the
   state it left, so some of its broken rules may be unfinished work.
 
-Cost per trial (Claude Code's reported `total_cost_usd`, mean): Sonnet $0.09 short / $0.18 long;
-Haiku 4.5 $0.11 / $0.18; Haiku 5.5 $0.44 / $0.72. The long handbook roughly doubles the cost of
-a trial because it is re-read as cached context on every turn. The hooks added no measurable
-cost. All runs together, including pilots and 11 discarded trials, cost about $45.
+Cost per trial (Claude Code's reported `total_cost_usd`, mean): Sonnet $0.09 short / $0.18 long
+/ $0.18 long with hooks; Haiku 4.5 $0.11 / $0.18 / $0.19; Haiku 5.5 $0.44 / $0.72 / $0.72. The
+long handbook roughly doubles the cost of a trial because it is re-read as cached context on
+every turn; the hooks added almost nothing. All runs together, including pilots, the first hook
+run and the 11 discarded trials, cost about $61 (of which the `p3` hook re-run was $16.43).
 
 ## Threats to validity
 
@@ -242,10 +251,15 @@ cost. All runs together, including pilots and 11 discarded trials, cost about $4
 - In hook arms the hook's command line names the rules file, and the settings file is readable
   in the workspace, so an agent could look the rules up. Real repos usually keep their rules in
   the repo anyway.
-- The hooks are ruleproof's own and the benchmark authors wrote both; a hook bug (see Results)
-  directly changes hook-arm outcomes. The `claims` check can also mistake an agent quoting a
-  rule ("make sure it passes") for a claim; this was seen in a pilot, not in scored trials.
-- A $1.00 budget cap per trial binds for Haiku 5.5 (5 capped trials), so its numbers mix rule
-  compliance with unfinished work.
+- The hooks are ruleproof's own and the benchmark authors wrote both; a hook bug directly
+  changes hook-arm outcomes. One did: the first hook run was hit by the PreToolUse bug described
+  under Hooks, which was fixed and the hook arms re-run.
+- The `claims` check is a heuristic. In `p3` it did not recognise
+  `uv run --project "$PROJ" pytest` as a test run (haiku55-long-hook split-render r2), so the
+  Stop hook blocked that trial once without cause; the agent finished on its second stop.
+  ruleproof `e12baf70` fixed this and scores the trial as clean. In a pilot the check also took
+  an agent quoting a rule ("make sure it passes") for a claim.
+- A $1.00 budget cap per trial binds for Haiku 5.5 (6 capped trials). A capped session ends
+  without the Stop hook running, so its numbers mix rule compliance with unfinished work.
 - Isolation is verified by asking the agent what it was given, plus a search of the saved
   transcripts; an agent may not report everything in its context.
