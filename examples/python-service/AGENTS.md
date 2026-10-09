@@ -15,7 +15,7 @@ SQLAlchemy, Alembic. Dependencies are managed with uv.
 - Run the tests after your last code change and before you say you are done. If you could
   not run them, say so.
 - Never run `pip install`; add dependencies with `uv add`.
-  <!-- ruleproof: forbid-command command="\bpip3? install\b" -->
+  <!-- ruleproof: forbid-command id=no-pip command="\bpip3? install\b" -->
 - Do not force-push, and do not use `git reset --hard` or `git clean -fd`.
   <!-- ruleproof: forbid-command id=no-destructive-git command="git\s+(push\s+.*(--force|-f)\b|reset\s+--hard|clean\s+-\w*f)" -->
 - The client in `orders/clients/payments/` is generated from the OpenAPI spec. Never edit it
