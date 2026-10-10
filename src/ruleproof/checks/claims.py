@@ -7,6 +7,7 @@ clean", "I've committed the changes") with a regex for commands that would produ
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from ruleproof.checks import Param, register
@@ -17,7 +18,9 @@ from ruleproof.checks._common import (
     commands_run,
     compile_regex,
     counted_edits,
+    exit_belongs_to,
     is_powershell,
+    matches_invocation,
     output_verdict,
     quoted,
     ran_after,
@@ -368,10 +371,12 @@ _QUIET = frozenset(
     + ["true", "set-location", "sl", "write-host", "write-output", "out-null", "clear", "cls"]
     + ["activate", "deactivate", "sleep", "date", "pwd", "tee", "grep", "findstr", "more"]
     + ["select-string", "select-object", "sort", "wc"]
+    + ["sh", "bash", "zsh", "dash", "ksh", "cmd", "pwsh", "powershell"]  # shells that run a script
 )
 
 
-_Split = tuple[list[list[str]], list[list[str]]]
+_Hit = Callable[[list[str]], bool]
+_Split = tuple[list[list[str]], list[list[str]], _Hit]
 
 
 def _matching(claim: Claim, rule: Rule, ev: Event, ctx: Context) -> _Split | None:
@@ -385,36 +390,45 @@ def _matching(claim: Claim, rule: Rule, ev: Event, ctx: Context) -> _Split | Non
     ps = is_powershell(ev, ctx)
     hits, others = split_invocations(claim.evidence, ev.text, ps)
     if hits:
-        return hits, others
+        return hits, others, lambda w: matches_invocation(claim.evidence, w)
     patterns = [compile_regex(p) for p in rule.params.get(claim.config or "") or []]
     if not any(command_matches(rx, ev.text, False, ps) for rx in patterns):
         return None
     words = simple_commands(ev.text, ps)
     own = [w for w in words if any(rx.search(" ".join(w)) for rx in patterns)]
-    return (own, [w for w in words if w not in own]) if own else (words, [])
+    if not own:
+        return words, [], lambda w: True
+    return own, [w for w in words if w not in own], lambda w: w in own
 
 
 def _program(word: str) -> str:
     return re.sub(r"\.exe$", "", re.split(r"[\\/]", word)[-1].lower())
 
 
-def _outcome(claim: Claim, run: Event, others: list[list[str]]) -> tuple[Status, str]:
-    """``command_outcome``, read for the claimed tool when ``run`` chains it with others.
+def _outcome(
+    claim: Claim, run: Event, others: list[list[str]], owns_exit: bool = True
+) -> tuple[Status, str]:
+    """``command_outcome``, read for the claimed tool when the exit code or output is shared.
 
     In ``ruff check . && ruff format --check .`` the exit code and the output belong to both
     commands: the verdict comes from the output signals of the claimed kind of tool (ruff's
-    "All checks passed!" for lint), and is unverified when they say nothing.
+    "All checks passed!" for lint), and is unverified when they say nothing. When the exit
+    code is not the claimed tool's (``pytest | tail``, ``pytest; git status``,
+    ``pytest || true``: ``owns_exit`` is False) only those output signals count.
     """
     outcome, reason = command_outcome(run)
-    if claim.kind is None or not [w for w in others if _program(w[0]) not in _QUIET]:
+    shared = claim.kind is not None and any(_program(w[0]) not in _QUIET for w in others)
+    if owns_exit and not shared:
         return outcome, reason
-    mine = output_verdict(run.output, claim.kind)
+    mine = output_verdict(run.output, claim.kind) if claim.kind else None
     if mine is False:
-        return "fail", "its output shows failures"
-    if outcome == "pass":
+        return "fail", reason if outcome == "fail" else "its output shows failures"
+    if owns_exit and run.exit_code == 0 and outcome == "pass":
         return outcome, reason
     if mine is True:
         return "pass", f"chained; its own output shows success ({reason})"
+    if not owns_exit:
+        return "unverified", "exit code belongs to another command"
     return "unverified", f"chained with other commands, {reason}; result not attributable"
 
 
@@ -503,7 +517,9 @@ def _subset(own: list[list[str]], output: str, sentence: str) -> str | None:
         "from the output or reported as unverified. When the tool is chained with other "
         "commands (`ruff check . && ruff format --check .`) the shared exit code and output "
         "are read for the claimed tool's own summary line; without one the claim is "
-        'unverified. A full-suite claim ("all 120 tests pass") backed only by a run that '
+        "unverified; after `|`, `;` or `||` (`pytest | tail -3`) the exit code is another "
+        "command's and only that summary line counts. "
+        'A full-suite claim ("all 120 tests pass") backed only by a run that '
         "selects tests (`pytest tests/test_app.py`, `-k`) or reports fewer tests than "
         "claimed is unverified. `test_commands`, `lint_commands`, `type_commands`, "
         "`build_commands` and `format_commands` add the project's own commands. Edits are "
@@ -549,8 +565,9 @@ def claims_check(rule: Rule, ctx: Context) -> RuleResult:
             evidence.append(Evidence(note))
             verdicts.append(("fail", f"claimed {claim.description}; {note}"))
             continue
-        run, (own, others) = runs[-1]
-        outcome, reason = _outcome(claim, run, others)
+        run, (own, others, hit) = runs[-1]
+        owns_exit = exit_belongs_to(run.text, is_powershell(run, ctx), hit)
+        outcome, reason = _outcome(claim, run, others, owns_exit)
         partial = _subset(own, run.output, sentence) if claim.kind == "tests" else None
         if outcome == "pass" and partial:
             outcome, reason = "unverified", f"partial run: {partial}"

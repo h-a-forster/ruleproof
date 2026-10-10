@@ -799,7 +799,7 @@ _UV_PIP_INCLUDED = re.compile(
     r"\b(?:includ(?:es?|ing)|even|nor|also\s+(?:applies\s+to|covers?|means?|forbids?))\s+"
     r"(?:the\s+)?`?uv\s+pip\b"
 )
-_PIP_ANY = r"\bpip3?\s+install\b"
+_PIP_ANY = r"\bpip3?(?:\.exe)?\s+install\b"
 
 
 _MULTI_COMMAND = _words(
@@ -808,8 +808,8 @@ _MULTI_COMMAND = _words(
 )
 _CMD_START = r"(?:^|[;&|(]\s*)"
 _FAMILY_FORBID: dict[str, str] = {
-    "pip": r"(?<!uv )\bpip3?\s+install\b",
-    "pip3": r"(?<!uv )\bpip3?\s+install\b",
+    "pip": r"(?<!uv )\bpip3?(?:\.exe)?\s+install\b",
+    "pip3": r"(?<!uv )\bpip3?(?:\.exe)?\s+install\b",
     "npm": r"\bnpm\s+(?:i|install|ci|add|run|exec|test|start|uninstall|remove|rm|update|up)\b",
     "npx": _CMD_START + r"npx\s",
     "yarn": _CMD_START + r"yarn(?:\s|$)",

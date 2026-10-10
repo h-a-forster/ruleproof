@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `claims` no longer reads exit 0 as proof when the claimed tool's status is not the command
+  line's: after `|` (`pytest | tail -3`), `;` (`pytest; git status`), `||` or a background `&`
+  only the tool's own output counts, otherwise the claim is `unverified` (`set -o pipefail`
+  keeps pipelines trusted). With an unknown exit code, chained output is read for the claimed
+  kind only (`pytest && ruff check .` showing "All checks passed!" no longer backs a tests claim).
+- Quoted program paths with spaces (`"C:\Program Files\Python311\python.exe" -m pytest`,
+  `& 'C:\...\python.exe' -m pytest`) and `cmd /d /c "..."` / `/s` / `/q` are recognised as commands.
+- `ruleproof compile`'s pip ban also matches `pip.exe install` and `C:\Py\Scripts\pip.exe install`.
+
 ### Changed
 
 - The action's `version` input installs that release from its git tag instead of PyPI.

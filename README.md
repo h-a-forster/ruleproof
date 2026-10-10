@@ -102,7 +102,7 @@ Or next to the prose they enforce, invisible in rendered Markdown:
 
 ```markdown
 - Never run `pip install`; add dependencies with `uv add`.
-  <!-- ruleproof: forbid-command id=no-pip command="\bpip3? install\b" -->
+  <!-- ruleproof: forbid-command id=no-pip command="\bpip3?(?:\.exe)? install\b" -->
 ```
 
 | Check | Evidence | Fails when |

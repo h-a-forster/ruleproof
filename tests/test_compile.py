@@ -289,6 +289,22 @@ def test_use_uv_not_pip(tmp_path: Path) -> None:
     assert not matches(regex, "uv add requests")
 
 
+def test_pip_ban_matches_pip_exe(tmp_path: Path) -> None:
+    (regex,) = commands(rules_of(tmp_path, "Always use `uv`, not pip."), "forbid-command")
+    assert matches(regex, "pip.exe install requests")
+    assert matches(regex, r"C:\Py\Scripts\pip.exe install requests")
+    assert not matches(regex, "uv pip install requests")
+    assert not matches(regex, "pipx install requests")
+    (any_regex,) = set(
+        commands(
+            rules_of(tmp_path, "Never `pip install`; that includes `uv pip install`."),
+            "forbid-command",
+        )
+    )
+    assert matches(any_regex, "pip3.exe install requests")
+    assert matches(any_regex, "uv pip install requests")
+
+
 @pytest.mark.parametrize(
     "prose",
     [

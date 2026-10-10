@@ -228,6 +228,8 @@ _PS_HINT = re.compile(
     r"|Push|Pop|Rename|Expand|Compress|Update|Wait|Read)-[A-Z][A-Za-z]+\b|\$env:"
 )
 _WORD_START = " \t\r\n;&|(){}"
+# A quoted executable path ("C:\Program Files\Python311\python.exe"): not prose, even with spaces.
+_PROGRAM_PATH = re.compile(r"^[^\n]*[\\/][^\\/\s]+$")
 
 
 class _Masker:
@@ -259,6 +261,22 @@ class _Masker:
                 j += 1  # an apostrophe inside a word: don't, it's
             else:
                 return j
+
+    def program_end(self, i: int) -> int | None:
+        """End of the quoted path to a program at ``i`` when it stands in command position
+        (``"C:\\Program Files\\Python\\python.exe" -m pytest``, ``& 'C:\\a b\\py.exe'``)."""
+        s = self.s
+        k = i - 1
+        while k >= 0 and s[k] in " \t":
+            k -= 1
+        if k >= 0 and s[k] not in ";&|(\n{":
+            return None
+        j = s.find(s[i], i + 1)
+        if j == -1 or not _PROGRAM_PATH.match(s[i + 1 : j]):
+            return None
+        if j + 1 < len(s) and not s[j + 1].isspace() and s[j + 1] not in ";&|)":
+            return None
+        return j + 1
 
     def scan(self, i: int, close: str | None) -> int:
         """Mask from ``i``; with ``close`` (``)`` or a backtick) return after the closer."""
@@ -306,6 +324,11 @@ class _Masker:
             if s.startswith("$((", i):
                 i = self.arithmetic(i + 3)
                 continue
+            if c in "'\"":
+                program = self.program_end(i)
+                if program is not None:
+                    i = program
+                    continue
             if c == "'":
                 if i > 0 and s[i - 1] == "$" and not self.ps:
                     i = self.ansi_c(i)
@@ -427,7 +450,10 @@ _PS_C = re.compile(
     r"\s+-(?:c|command)\s+",
     re.IGNORECASE,
 )
-_CMD_C = re.compile(r"(?:^|(?<=[\s;&|(]))(?:\S*[\\/])?cmd(?:\.exe)?\s+/[cCkK]\s+")
+_CMD_C = re.compile(
+    r"(?:^|(?<=[\s;&|(]))(?:\S*[\\/])?cmd(?:\.exe)?(?:\s+/[a-z](?::\S+)?)*?\s+/[ck]\s+",
+    re.IGNORECASE,
+)
 _EVAL = re.compile(
     r"(?:^|(?<=[\s;&|(]))(?:eval|iex|Invoke-Expression|ssh(?:\s+-\w+(?:\s+[^\s\"'-]\S*)?)*"
     r"\s+[^\s\"'-]\S*)\s+",
@@ -667,19 +693,94 @@ def split_invocations(
     hits: list[list[str]] = []
     others: list[list[str]] = []
     for words in simple_commands(command, powershell):
-        hit = next(
-            (
-                cand
-                for cand in _invocations(words)
-                if rx.match(" ".join(cand)) and not _NOT_A_RUN.intersection(cand[1:])
-            ),
-            None,
-        )
+        hit = _invocation(rx, words)
         if hit is None:
             others.append(words)
         else:
             hits.append(hit)
     return hits, others
+
+
+def _invocation(rx: re.Pattern[str], words: list[str]) -> list[str] | None:
+    return next(
+        (
+            cand
+            for cand in _invocations(words)
+            if rx.match(" ".join(cand)) and not _NOT_A_RUN.intersection(cand[1:])
+        ),
+        None,
+    )
+
+
+def matches_invocation(rx: re.Pattern[str], words: list[str]) -> bool:
+    """True when the simple command ``words`` runs the tool ``rx`` names."""
+    return _invocation(rx, words) is not None
+
+
+_PIPEFAIL = re.compile(r"\bset\b[^;&|\n]*\bpipefail\b")
+_NEUTRAL = frozenset(["(", ")", "{", "}", "$(", "`"])
+_WRAPPERS = frozenset(
+    ["sh", "bash", "zsh", "dash", "ksh", "cmd", "pwsh", "powershell", "eval", "iex", "ssh"]
+)
+
+
+def exit_belongs_to(command: str, powershell: bool, hit: Callable[[list[str]], bool]) -> bool:
+    """True when the exit status of ``command`` is that of a command ``hit`` accepts.
+
+    That holds when every separator between the last such command and the end is ``&&``
+    (or ``|`` after ``set -o pipefail``). After ``|``, ``;``, ``||`` or a background ``&`` the
+    status belongs to something else (``pytest | tail`` exits with tail's status), and so it
+    does for a command that follows ``||`` (``a || pytest``) or sits in ``$(...)``.
+    """
+    views = [v for v in _views(command, powershell) if not v.raw]
+    pipefail = bool(_PIPEFAIL.search(views[0].masked))
+    plans: list[tuple[list[tuple[bool, object]], int]] = []
+    found = False
+    for view in views:
+        seq: list[tuple[bool, object]] = []  # (is_segment, words | separator)
+        pos = 0
+        for m in _SEPARATOR.finditer(view.masked):
+            words = [w for w in _tokens(view.masked[pos : m.start()], view.ps) if w.strip()]
+            if words:
+                seq.append((True, words))
+            seq.append((False, m.group()))
+            pos = m.end()
+        words = [w for w in _tokens(view.masked[pos:], view.ps) if w.strip()]
+        if words:
+            seq.append((True, words))
+        hits = [k for k, (seg, v) in enumerate(seq) if seg and hit(v)]  # type: ignore[arg-type]
+        found = found or bool(hits)
+        plans.append((seq, hits[-1] if hits else -1))
+    if not found:
+        return True
+    for seq, anchor in plans:
+        if anchor < 0:
+            wrappers = [
+                k
+                for k, (seg, v) in enumerate(seq)
+                if seg and _program(v[0]).lower() in _WRAPPERS  # type: ignore[index]
+            ]
+            if not wrappers:
+                continue
+            anchor = wrappers[-1]
+        last = max((k for k, (seg, _) in enumerate(seq) if seg), default=-1)
+        for k in range(anchor - 1, -1, -1):
+            seg, v = seq[k]
+            if seg or v in ("(", "{"):
+                if seg:
+                    break
+                continue
+            if v in ("||", "$(", "`"):
+                return False
+            break
+        ok = {"&&", "|"} if pipefail else {"&&"}
+        for k in range(anchor + 1, len(seq)):
+            seg, v = seq[k]
+            if seg or v in _NEUTRAL or v in ok:
+                continue
+            if k < last or v == "&":
+                return False
+    return True
 
 
 def _invocations(words: list[str]) -> Iterable[list[str]]:

@@ -72,7 +72,7 @@ Markdown:
 - Never edit generated code in `api/gen/`.
   <!-- ruleproof: forbid-change paths=api/gen/ -->
 - Never run `pip install`; use `uv add`.
-  <!-- ruleproof: forbid-command id=no-pip command="\bpip3? install\b" -->
+  <!-- ruleproof: forbid-command id=no-pip command="\bpip3?(?:\.exe)? install\b" -->
 ```
 
 Syntax: `<!-- ruleproof: <check> key=value key="value with spaces" -->`.
@@ -357,7 +357,10 @@ Checks what the agent says it did against what it ran. It reads the assistant me
 last counted edit (the agent's report), finds claims, and ignores negated, hedged and
 prescriptive sentences ("I couldn't run the tests", "make sure the tests pass") as well as quoted
 text and blockquotes (an agent quoting a rule is not reporting a result). For each claim it looks
-for an evidence command after the last counted edit.
+for an evidence command after the last counted edit. The exit code backs a claim only when it is the tool's own: in
+`pytest | tail -3`, `pytest; git status` or `pytest || true` it belongs to another command,
+so only the tool's own summary line in the output (`16 passed`, `1 failed`) decides, and the claim
+is unverified without one.
 
 | Parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
