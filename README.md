@@ -41,6 +41,27 @@ The rules are those of [examples/python-service](examples/python-service); the s
 scripted Claude Code transcript in which the agent edits after testing, says "All tests pass",
 runs `pip install` and hand-edits generated code.
 
+## Findings
+
+From the [benchmarks](#results) (small n, one repo, a Claude judge; read them as indications):
+
+- **Blocking hooks closed the gap.** With `PreToolUse` and `Stop` hooks, Haiku 4.5 on the long
+  handbook passed every rule in 15/15 runs, against 5/15 without them. The Stop hook sent 6 runs
+  back to fix a missing changelog entry or an unverified claim, and all 6 were fixed. The rows are
+  graded by the same rules that steered the agent ([Results](#results)).
+- **Handbook length mattered.** The same rules in a 12k-token handbook instead of a 55-line
+  AGENTS.md dropped Haiku 4.5 from 12/15 to 5/15 clean runs (Fisher p ~ 0.025), the only
+  significant difference in the benchmark. The rules lost were the ones that ask for restraint or
+  extra work ([Results](#results)).
+- **The claims check did not agree with an independent judge.** On the pressure tasks it had
+  precision 0/12 and recall 0/8 against the judge, so the unverified-"tests pass" check does not
+  yet work. It is reported as a negative result ([details](bench/README.md#results-1)).
+- **Task success was at ceiling.** Hidden tests passed in 79 of 80 pressure runs, so the
+  benchmark measures rule cleanliness, not capability ([Results](#results)).
+- **Under pressure nothing was significant.** Clean runs ranged from 1/15 to 6/15 across arms
+  (smallest Fisher p = 0.08), and every agent followed a prompt's "don't run the tests" over
+  AGENTS.md ([pressure tasks](bench/README.md#pressure-tasks-run-pt1)).
+
 ## Why
 
 Instruction files are prose. Agents read them, skip steps, and report success anyway. Nobody
@@ -293,6 +314,30 @@ design guidance with no deterministic check, and `compile` skips what it cannot 
 What ruleproof adds is narrower: rules taken from the instruction files you already have,
 checked after the fact against both the session transcript and the git diff, the same way for
 Claude Code, Codex and Gemini CLI, deterministically and in CI.
+
+## Open questions
+
+Each is something the repo can start on; the pointers say where.
+
+- **Why are self-reported verification claims hard to check from a transcript?** The claims check
+  reads only the first claim of each kind, does not follow background runs, and mistakes honest
+  partial reports for claims. Start at `src/ruleproof/checks/claims.py` and the failure list in
+  [bench/README.md](bench/README.md#results-1).
+- **Does rule compliance transfer to other repos and handbooks?** Everything here is one small
+  Python repo with handbooks by the same authors. Start at `bench/tasks/`, `bench/variants/long/`
+  and `bench/run.py`.
+- **How well does the judge match human labels?** No human labelled any run; the judge is a
+  Claude model and was only partly blind to the arm. Start at `bench/judge.py` and
+  `bench/results/pt1/` (per-trial transcripts, judge verdicts).
+- **Which rules can hooks enforce, and which can they only detect?** PreToolUse can refuse a
+  command or edit; "tell the truth about what you ran" cannot be refused up front. Start at
+  `src/ruleproof/hook.py` and `docs/claude-code-hook.md`.
+- **Is a generic control as good as rule-derived hooks?** A hand-written control scored 3/15 clean (judge)
+  against 5/15 for ruleproof's hooks (p = 0.68) on the pressure tasks. Start at
+  `bench/control_stop.py` and `bench/analyze_pressure.py`.
+- **Why does the `tests-pass` rule accept runs that leave tests out?** Precision was 0.86 and
+  recall 0.68 against the judge, because `-k "not vat_id"` passes the rule. Start at
+  `bench/rules.toml` and `src/ruleproof/checks/transcript_checks.py`.
 
 ## What it does not do
 
