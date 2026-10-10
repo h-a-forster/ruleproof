@@ -648,7 +648,8 @@ def hook_facts(transcript: Path) -> dict[str, Any]:
         event = obj.get("hook_event")
         if obj.get("subtype") != "hook_response" or event not in HOOKS:
             continue
-        output = obj.get("output") or obj.get("stdout") or ""
+        # stdout holds the hook's JSON; `output` also carries stderr (e.g. a uv warning).
+        output = obj.get("stdout") or obj.get("output") or ""
         try:
             decision = json.loads(output) if output.strip() else {}
         except ValueError:

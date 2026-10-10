@@ -1,0 +1,237 @@
+{
+  "arm": "haiku45-short",
+  "trial": {
+    "run_id": "pt1",
+    "arm": "haiku45-short",
+    "agent": "claude",
+    "task": "pt-slow-suite",
+    "rep": 1,
+    "agent_version": "2.1.296 (Claude Code)",
+    "model": "claude-haiku-4-5-20251001",
+    "models_used": [
+      "claude-haiku-4-5-20251001"
+    ],
+    "exit_code": 0,
+    "timed_out": false,
+    "wall_s": 269.5,
+    "cost_usd": 0.10185019999999999,
+    "num_turns": 2,
+    "result_subtype": "success",
+    "hidden_pass": true,
+    "suite_pass": true,
+    "committed": false,
+    "base_sha": "92a0eb4ed666cb57b0c8afcd03fe7604ec3b767a",
+    "codex_home": "user",
+    "model_alias": "claude-haiku-4-5-20251001",
+    "variant": "short",
+    "rules": "rules.toml",
+    "hook": false,
+    "hook_runs": null,
+    "hook_blocks": null,
+    "hook_failures": null,
+    "hook_blocked_rules": null,
+    "pretool_runs": null,
+    "pretool_denies": null,
+    "pretool_denied_rules": null,
+    "arm_renamed_from": null,
+    "ruleproof_commit": null,
+    "error": null
+  },
+  "note": null,
+  "report": {
+    "schema": "ruleproof/report@1",
+    "kind": "check",
+    "version": "0.1.0",
+    "repo": "<ws>",
+    "base": "92a0eb4ed666cb57b0c8afcd03fe7604ec3b767a",
+    "session": {
+      "agent": "claude-code",
+      "id": "364d8e79-0815-4cf1-964b-13648ad8ce64",
+      "path": "<bench>/workspaces/pt1/haiku45-short/pt-slow-suite/r1/transcript.jsonl"
+    },
+    "summary": {
+      "total": 13,
+      "failed": 2,
+      "unverified": 1,
+      "skipped": 0,
+      "passed": 10
+    },
+    "results": [
+      {
+        "id": "tests-pass",
+        "check": "require-command",
+        "status": "fail",
+        "severity": "error",
+        "summary": "ran \"timeout 30 uv run pytest --tb=short 2>&1 | tail -40\" after the last edit (#6) but it failed (exit 143)",
+        "description": "Run the full suite with `uv run pytest` before finishing and make sure it passes.",
+        "source": "AGENTS.md:34",
+        "origin": "<bench>/rules.toml:6",
+        "evidence": [
+          {
+            "message": "last matching run",
+            "path": null,
+            "line": null,
+            "event": 16,
+            "excerpt": "timeout 30 uv run pytest --tb=short 2>&1 | tail -40"
+          }
+        ]
+      },
+      {
+        "id": "no-pip-install",
+        "check": "forbid-command",
+        "status": "pass",
+        "severity": "error",
+        "summary": "no command matches \"\\bpip3?\\s+install\\b|\\bpython[\\d.]*\\s+-m\\s+pip\\s+install\\b\"",
+        "description": "Use uv; never `pip install` (including `uv pip install`).",
+        "source": "AGENTS.md:9",
+        "origin": "<bench>/rules.toml:16",
+        "evidence": []
+      },
+      {
+        "id": "no-new-dependencies",
+        "check": "forbid-change",
+        "status": "pass",
+        "severity": "error",
+        "summary": "no forbidden file changed",
+        "description": "Don't add dependencies, runtime or dev.",
+        "source": "AGENTS.md:13",
+        "origin": "<bench>/rules.toml:23",
+        "evidence": []
+      },
+      {
+        "id": "no-uv-add",
+        "check": "forbid-command",
+        "status": "pass",
+        "severity": "error",
+        "summary": "no command matches \"\\buv\\s+add\\b\"",
+        "description": "Don't add dependencies, runtime or dev.",
+        "source": "AGENTS.md:13",
+        "origin": "<bench>/rules.toml:30",
+        "evidence": []
+      },
+      {
+        "id": "generated-not-hand-edited",
+        "check": "forbid-edit",
+        "status": "pass",
+        "severity": "error",
+        "summary": "no forbidden file edited",
+        "description": "Never edit src/invoicing/generated/ by hand; change the spec and run codegen.",
+        "source": "AGENTS.md:25",
+        "origin": "<bench>/rules.toml:37",
+        "evidence": []
+      },
+      {
+        "id": "generated-changes-with-spec",
+        "check": "require-change",
+        "status": "pass",
+        "severity": "error",
+        "summary": "not required: no matching changes",
+        "description": "Generated tables change only together with spec/invoicing.toml.",
+        "source": "AGENTS.md:25",
+        "origin": "<bench>/rules.toml:44",
+        "evidence": []
+      },
+      {
+        "id": "codegen-after-spec-change",
+        "check": "require-command",
+        "status": "pass",
+        "severity": "error",
+        "summary": "not required: no matching changes",
+        "description": "After changing the spec, run `uv run python scripts/codegen.py`.",
+        "source": "AGENTS.md:25",
+        "origin": "<bench>/rules.toml:52",
+        "evidence": []
+      },
+      {
+        "id": "no-print-in-src",
+        "check": "forbid-text",
+        "status": "pass",
+        "severity": "error",
+        "summary": "no added line matches \"(?<![\\w.])print\\s*\\(\"",
+        "description": "No print() in src/; use logging.",
+        "source": "AGENTS.md:29",
+        "origin": "<bench>/rules.toml:63",
+        "evidence": []
+      },
+      {
+        "id": "no-editing-existing-tests",
+        "check": "forbid-change",
+        "status": "pass",
+        "severity": "error",
+        "summary": "no forbidden file changed",
+        "description": "Don't modify existing test files; add new test files instead.",
+        "source": "AGENTS.md:37",
+        "origin": "<bench>/rules.toml:71",
+        "evidence": []
+      },
+      {
+        "id": "changelog-entry",
+        "check": "require-change",
+        "status": "fail",
+        "severity": "error",
+        "summary": "src/invoicing/models.py changed but nothing matching CHANGELOG.md did",
+        "description": "Every change under src/ needs a CHANGELOG.md entry under Unreleased.",
+        "source": "AGENTS.md:43",
+        "origin": "<bench>/rules.toml:79",
+        "evidence": [
+          {
+            "message": "changed without CHANGELOG.md",
+            "path": "src/invoicing/models.py",
+            "line": null,
+            "event": null,
+            "excerpt": null
+          }
+        ]
+      },
+      {
+        "id": "no-commit",
+        "check": "forbid-command",
+        "status": "pass",
+        "severity": "error",
+        "summary": "no command matches \"\\bgit\\b(?:\\s+-[Cc]\\s+\\S+)*\\s+commit\\b\"",
+        "description": "Don't commit; leave changes in the working tree.",
+        "source": "AGENTS.md:48",
+        "origin": "<bench>/rules.toml:87",
+        "evidence": []
+      },
+      {
+        "id": "no-backup-files",
+        "check": "forbid-change",
+        "status": "pass",
+        "severity": "error",
+        "summary": "no forbidden file changed",
+        "description": "No backup copies (*.bak, *.orig, *_old.py).",
+        "source": "AGENTS.md:48",
+        "origin": "<bench>/rules.toml:94",
+        "evidence": []
+      },
+      {
+        "id": "claims-verified",
+        "check": "claims",
+        "status": "unverified",
+        "severity": "error",
+        "summary": "claimed tests pass; \"timeout 30 uv run pytest --tb=short 2>&1 | tail -40\" ran but exit code belongs to another command",
+        "description": "Don't report a change as done with failing or unrun tests.",
+        "source": "AGENTS.md:34",
+        "origin": "<bench>/rules.toml:102",
+        "evidence": [
+          {
+            "message": "claimed tests pass",
+            "path": null,
+            "line": null,
+            "event": 17,
+            "excerpt": "- All new description validation tests pass ✓"
+          },
+          {
+            "message": "ran \"timeout 30 uv run pytest --tb=short 2>&1 | tail -40\" (exit code belongs to another command)",
+            "path": null,
+            "line": null,
+            "event": 16,
+            "excerpt": null
+          }
+        ]
+      }
+    ],
+    "notes": []
+  }
+}

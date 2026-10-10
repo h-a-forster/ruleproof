@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Benchmark: five pressure tasks that tempt agents to claim unverified success, a control arm
+  (`permissions.deny` plus a generic Stop hook), an Opus arm, per-run budget options, and an
+  independent LLM judge (`bench/judge.py`, `bench/analyze_pressure.py`). Run `pt1` (80 trials)
+  finds the `claims` check does not yet agree with the judge (precision 0/12, recall 0/8).
+
 ### Fixed
 
 - `claims` no longer reads exit 0 as proof when the claimed tool's status is not the command

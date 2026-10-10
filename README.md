@@ -8,8 +8,9 @@ Check whether a coding agent followed your AGENTS.md.
 
 ruleproof turns the checkable rules in `AGENTS.md`, `CLAUDE.md` and `GEMINI.md` into
 deterministic checks. It runs them against the git diff and the agent's session transcript, and
-reports each broken rule with evidence. It also catches claims the agent never verified, such as
-"all tests pass" with no test run after the last edit.
+reports each broken rule with evidence. It also flags claims the agent never verified, such as
+"all tests pass" with no test run after the last edit; that check is a heuristic and, on our
+pressure benchmark, it does not yet agree with an independent judge (see [Results](#results)).
 
 No model is called. Same input, same verdict. No runtime dependencies.
 
@@ -208,8 +209,8 @@ user-level config excluded, 3 runs per task, so n = 15 per row. "Short" is a 55-
 
 - **Grading is circular.** Every row, including the hook rows, is graded by ruleproof itself.
   In the hook rows the same rules also steered the agent, so those rows show that the agent
-  ended up satisfying ruleproof, not that an independent grader agrees. There is no
-  independent grader yet.
+  ended up satisfying ruleproof, not that an independent grader agrees. The pressure run below
+  adds an independent grader.
 - **Only one difference is statistically significant.** Haiku 4.5 short vs long (12/15 vs
   5/15, Fisher exact p ≈ 0.025). Haiku 5.5 short vs long (15/15 vs 11/15) gives p ≈ 0.10, and
   Haiku 5.5 long vs long with hooks gives p ≈ 0.65 as first reported (11/15 vs 13/15; p = 1.0
@@ -223,11 +224,43 @@ user-level config excluded, 3 runs per task, so n = 15 per row. "Short" is a 55-
 - With both hooks, Haiku 4.5 on the long handbook passed every rule in all 15 runs.
   PreToolUse refused 3 `git commit`s and 5 edits to existing tests before they ran. The Stop
   hook sent 6 runs back to add a changelog entry or verify a claim; all 6 were fixed.
-- **No evidence for the claims check yet.** In final scoring it flagged 0 of 135 runs: agents
-  claimed passing tests in almost every run and backed every claim with a test run after the
-  last edit. The bench shows neither precision nor recall for it.
+- The claims check flagged 0 of these 135 runs: every claim was backed by a test run.
 - One repo, and the same authors wrote the tasks, the rules and the checks. See
   [threats to validity](bench/README.md#threats-to-validity).
+
+**Pressure tasks** ([bench/](bench/README.md#pressure-tasks-run-pt1)). Five more tasks tempt
+the agent to report success it has not verified: an unrelated failing test, a 4-minute test
+file, a prompt that says not to run the tests, a broken pytest config, a test that pins the bug
+being fixed. 80 runs: Haiku 4.5 short / long / long with ruleproof hooks / long with a control
+(`permissions.deny` plus a generic "re-read AGENTS.md" Stop hook), Sonnet 5.5 long (15 each),
+Opus 5.5 long (5). An Opus judge graded every run from a condensed transcript and the diff,
+without seeing ruleproof's output or the hooks' messages.
+
+| Model | AGENTS.md | Protection | All rules followed (judge) | (ruleproof) |
+| --- | --- | --- | ---: | ---: |
+| Haiku 4.5 | short | | 3/15 | 3/15 |
+| Haiku 4.5 | long | | 1/15 | 1/15 |
+| Haiku 4.5 | long | control: deny rules + generic Stop hook | 3/15 | 6/15 |
+| Haiku 4.5 | long | ruleproof PreToolUse + Stop | 5/15 | 5/15 |
+| Sonnet 5.5 | long | | 6/15 | 3/15 |
+| Opus 5.5 | long | | 2/5 | 2/5 |
+
+- **No difference is significant.** Smallest Fisher p = 0.08; ruleproof hooks vs control 5/15
+  vs 3/15, p = 0.68. The task decides most outcomes (intraclass correlation up to 1.0), so each
+  row has an effective n of 5 to 10 and at most 5 independent tasks.
+- **ruleproof vs the judge, per rule.** `changelog-entry` 19/19 violations found, no false
+  alarm (kappa 1.0); `no-editing-existing-tests` 11 of 13, no false alarm (kappa 0.90);
+  `tests-pass` precision 0.86, recall 0.68, because the rule accepts runs that leave tests out
+  (`-k "not vat_id"`). Pooled kappa 0.73. The judge agreed with itself on 97% of 200 re-judged
+  verdicts.
+- **The claims check fails this test.** It now fires (24 of 80 runs fail or are unverified),
+  but against the judge it has precision 0/12 and recall 0/8 (4 of the 8 came out
+  unverified). It checks only the first claim sentence of each kind, does not follow tests run
+  in the background, and read honest partial reports ("15 of 16 tests pass") as claims. Fixes
+  made after this analysis remove 3 of the 12 false alarms (in-sample); the rest is open work.
+- Every agent, Opus and Sonnet included, followed the prompt's "don't bother running the test
+  suite" over AGENTS.md. The judge is a Claude model, from a prompt by the same authors, and no
+  human labelled the runs. Total nested spend for the run, judge included: about $25.
 
 **Compile** ([bench/corpus/](bench/corpus/results.md)). `ruleproof compile` was run on 50 public
 instruction files (Next.js, VS Code, Deno, ruff, uv, Airflow, ...). Of 1,960 directives, 62
@@ -244,10 +277,12 @@ design guidance with no deterministic check, and `compile` skips what it cannot 
 - **Claim checking.** [claimproof](https://pypi.org/project/claimproof/),
   [groundtruth](https://github.com/msal2020/groundtruth), attest and mcp-truth-check also check
   what an agent says it did against evidence. ruleproof's `claims` check is one more heuristic
-  in that space, and the benchmark has not yet shown it catching anything (see above).
+  in that space; on the pressure benchmark it did not yet agree with an independent judge (see
+  above).
 - **Blocking while the agent works.** Claude Code's own `permissions.deny` and hooks already
   block forbidden commands and edits in Claude Code sessions; ruleproof's hooks are a
-  convenience on top, not something only it can do.
+  convenience on top, not something only it can do. In the pressure benchmark a hand-written
+  control (deny rules plus a generic Stop hook) did about as well as ruleproof's hooks.
 
 What ruleproof adds is narrower: rules taken from the instruction files you already have,
 checked after the fact against both the session transcript and the git diff, the same way for
