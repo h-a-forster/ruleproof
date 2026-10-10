@@ -20,6 +20,8 @@ All notable changes to this project are documented here. The format follows
   (`cat pyproject.toml; pytest`), which made a passing run read as failed.
 - `claims` ignores partial and scoped reports: "15 of 16 tests pass", "the other 19 tests
   pass", "all 3 tests in test_totals.py pass". Found by the pressure benchmark's judge.
+- A command refused by a `permissions.deny` rule ("Permission to use Bash with command ... has
+  been denied") counts as not run, so a denied `git commit` no longer fails `forbid-command`.
 
 ### Changed
 

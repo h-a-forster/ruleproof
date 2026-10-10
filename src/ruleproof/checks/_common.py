@@ -88,7 +88,7 @@ def globs_match(path: str, patterns: Iterable[str] | None, scope: str | None = N
 _DENIED = re.compile(
     r"doesn't want to proceed|tool use was rejected|rejected by (?:the )?user"
     r"|requested permissions? to use|haven't granted it"
-    r"|permission to use \w+ (?:has been|was) denied"
+    r"|permission to use \w+(?: with command [\s\S]*?)? (?:has been|was) denied"
     r"|\bhook (?:error|blocked)|blocked by (?:a |the )?(?:\w+ )?hook|PreToolUse:\w+ hook"
     r"|user (?:denied|declined)|was (?:denied|cancelled|canceled) by the user",
     re.IGNORECASE,

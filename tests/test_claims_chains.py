@@ -7,6 +7,7 @@ from test_claims import cmd, edit, run, say, session
 
 from ruleproof.checks._common import (
     command_texts,
+    did_not_run,
     exit_belongs_to,
     matches_invocation,
     output_verdict,
@@ -151,3 +152,10 @@ def test_partial_and_scoped_statements_are_not_claims(text: str) -> None:
 
 def test_full_suite_claim_still_found() -> None:
     assert "tests" in find_claims("All 19 tests pass.", ["tests"])
+
+
+def test_permission_deny_message_with_command_means_not_run() -> None:
+    out = 'Permission to use Bash with command git commit -m "x\n\ny" has been denied.'
+    ev = cmd('git commit -m "x\n\ny"', exit_code=None, output=out)
+    ev.is_error = True
+    assert did_not_run(ev)
