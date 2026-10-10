@@ -296,7 +296,12 @@ _SENTENCE_HEDGE = re.compile(
     r"|\b(?:most|some|only|several|many|few)\s+(?:of\s+(?:the\s+)?)?(?:\d+\s+)?(?:\w+\s+)?"
     r"tests?\b"
     r"|\b[1-9]\d*\s+(?:\w+\s+)?(?:tests?\s+)?(?:failed|fail|fails|failing|failures?)\b"
-    r"|\bpassed,\s+[1-9]\d*\s+errors?\b",
+    r"|\bpassed,\s+[1-9]\d*\s+errors?\b"
+    # "15 of 16 tests pass", "the other 19 tests pass": the rest did not.
+    r"|\b\d+\s+(?:of|out\s+of)\s+\d+\s+(?:\w+\s+)?tests?\b"
+    r"|\b(?:other|rest\s+of\s+the)\s+(?:\d+\s+)?(?:\w+\s+)?tests?\b"
+    # "all 3 tests in test_totals.py pass": scoped to named files, not the suite.
+    r"|\btests?\s+(?:in|from)\s+`?[\w/\\.-]+\.py\b",
     re.IGNORECASE,
 )
 # Cues that void only their own clause: negation and failure words.

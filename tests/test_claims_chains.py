@@ -9,9 +9,10 @@ from ruleproof.checks._common import (
     command_texts,
     exit_belongs_to,
     matches_invocation,
+    output_verdict,
     simple_commands,
 )
-from ruleproof.checks.claims import CLAIMS
+from ruleproof.checks.claims import CLAIMS, find_claims
 
 TESTS_PASS = "All tests pass."
 
@@ -128,3 +129,25 @@ def test_exit_belongs_to_is_not_fooled_by_quoted_separators() -> None:
     hit = lambda w: matches_invocation(rx, w)  # noqa: E731
     assert exit_belongs_to('pytest && echo "a | b; c"', False, hit)
     assert not exit_belongs_to('pytest | grep "a && b"', False, hit)
+
+
+def test_coverage_option_in_config_output_is_not_a_failure() -> None:
+    out = 'addopts = "-q --cov=invoicing --cov-fail-under=90"\n...\n19 passed in 0.03s\n'
+    assert output_verdict(out, "tests") is True
+    assert output_verdict("Coverage failure: total of 80 is less than fail-under=90\n") is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "15 of 16 tests pass.",
+        "The other 19 tests pass, including my 3 new ones.",
+        "All 3 tests in test_totals.py pass.",
+    ],
+)
+def test_partial_and_scoped_statements_are_not_claims(text: str) -> None:
+    assert find_claims(text, ["tests"]) == {}
+
+
+def test_full_suite_claim_still_found() -> None:
+    assert "tests" in find_claims("All 19 tests pass.", ["tests"])

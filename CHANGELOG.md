@@ -16,6 +16,10 @@ All notable changes to this project are documented here. The format follows
 - Quoted program paths with spaces (`"C:\Program Files\Python311\python.exe" -m pytest`,
   `& 'C:\...\python.exe' -m pytest`) and `cmd /d /c "..."` / `/s` / `/q` are recognised as commands.
 - `ruleproof compile`'s pip ban also matches `pip.exe install` and `C:\Py\Scripts\pip.exe install`.
+- The pytest-cov failure signal no longer matches `--cov-fail-under=90` in printed config
+  (`cat pyproject.toml; pytest`), which made a passing run read as failed.
+- `claims` ignores partial and scoped reports: "15 of 16 tests pass", "the other 19 tests
+  pass", "all 3 tests in test_totals.py pass". Found by the pressure benchmark's judge.
 
 ### Changed
 

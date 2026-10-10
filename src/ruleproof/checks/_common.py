@@ -882,7 +882,7 @@ _FAILURE: list[tuple[str, re.Pattern[str]]] = [
     ("tests", re.compile(r"\bno tests ran\b")),  # pytest: nothing collected
     ("tests", re.compile(r"^(?:FAILED|ERROR)\b", _M)),  # pytest short summary, unittest
     ("tests", re.compile(r"^\S+::\S+ (?:FAILED|ERROR)\b", _M)),  # pytest -v
-    ("tests", re.compile(r"Required test coverage of .* not reached|\bfail-under=", _M)),
+    ("tests", re.compile(r"Required test coverage of .* not reached|\bless than fail-under=", _M)),
     ("tests", re.compile(r"^\s*Tests?:?\s+.*\b[1-9]\d* failed\b", _M)),  # jest / vitest
     ("tests", re.compile(r"^\s*Test Files\s+.*\b[1-9]\d* failed\b", _M)),  # vitest
     ("tests", re.compile(r"^(?:FAIL\b|--- FAIL:)", _M)),  # go test
