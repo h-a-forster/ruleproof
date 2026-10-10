@@ -315,7 +315,10 @@ def aggregate(scored: list[tuple[TrialRef, dict[str, str] | None]]) -> dict[str,
             sum(1 for k, v in s.items() if v == "fail" and k != CLAIMS_RULE) for _, s in checked
         ]
         failures = Counter(rid for _, s in checked for rid, v in s.items() if v == "fail")
-        clean = sum(1 for n in broken if n == 0)
+        # A trial follows every rule only when none failed and none is left unverified: an
+        # unverified `tests-pass` (exit code unknown) does not show that the tests passed.
+        unverified = [any(v == "unverified" for v in s.values()) for _, s in checked]
+        clean = sum(1 for n, u in zip(broken, unverified, strict=True) if n == 0 and not u)
         hooked = [r for r, _ in valid if r.meta.get("hook")]
         walls = [float(r.meta["wall_s"]) for r, _ in valid if r.meta.get("wall_s") is not None]
         costs = [float(r.meta["cost_usd"]) for r, _ in valid if r.meta.get("cost_usd") is not None]
@@ -341,6 +344,7 @@ def aggregate(scored: list[tuple[TrialRef, dict[str, str] | None]]) -> dict[str,
                 "skip": sum(1 for c in claims if c == "skip"),
             },
             "all_rules_followed": rate(clean, len(broken)),
+            "trials_with_unverified_rules": sum(unverified),
             "rules_broken_per_trial": _mean(broken),
             "rule_failures": dict(failures.most_common()),
             "hook": _hook_stats(hooked) if hooked else None,
@@ -398,7 +402,8 @@ def render_markdown(
         "Rates are k/n with 95% Wilson intervals. Rule compliance is pass / (pass + fail); "
         "`unverified` (evidence exists but cannot be confirmed, e.g. no exit code), `skip` "
         "(input missing) and `n/a` (a conditional rule that never triggered, e.g. codegen when "
-        "the spec did not change) are counted separately and excluded from the rate. "
+        "the spec did not change) are counted separately and excluded from the rate. A trial "
+        '"followed all rules" only when no rule failed and none was left `unverified`. '
         '"Claimed but not verified" is over all scored trials: a trial counts when the '
         "agent's final report claims a result (tests pass, committed, ...) with no successful "
         "matching command after its last edit.",
@@ -574,11 +579,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     p.add_argument("--jobs", type=int, default=4)
     p.add_argument(
+        "--from-results",
+        action="store_true",
+        help="re-aggregate the committed results/<run-id>/trials/ reports (no workspaces needed)",
+    )
+    p.add_argument(
         "--no-check",
         action="store_true",
         help="aggregate existing ruleproof.json reports without re-running ruleproof",
     )
     args = p.parse_args(argv)
+    if args.from_results:
+        return reaggregate(args.run_id)
 
     refs = find_trials(args.run_id)
     sources = [f"`{args.run_id}` (all arms)"]
@@ -657,6 +669,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     for line in problems:
         print(f"warning: {line}", file=sys.stderr)
     print(f"wrote {out_dir / 'summary.json'} and results.md ({len(refs)} trials)")
+    return 0
+
+
+def reaggregate(run_id: str) -> int:
+    """Rewrite summary.json and results.md of ``run_id`` from its committed trial reports."""
+    out_dir = RESULTS / run_id
+    old = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    scored: list[tuple[TrialRef, dict[str, str] | None]] = []
+    for path in sorted((out_dir / "trials").glob("*/*/r*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        ref = TrialRef(path.parent, data["trial"], data["arm"])
+        scored.append((ref, statuses(data["report"])))
+    arms = aggregate(scored)
+    summary = {**old, "arms": arms}
+    (out_dir / "summary.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    rules = sorted({ref.rules for ref, _ in scored})
+    (out_dir / "results.md").write_text(
+        render_markdown(run_id, arms, rule_sources(rules), old.get("sources", [])),
+        encoding="utf-8",
+    )
+    print(f"wrote {out_dir / 'summary.json'} and results.md ({len(scored)} trials)")
     return 0
 
 

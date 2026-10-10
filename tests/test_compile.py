@@ -289,6 +289,38 @@ def test_use_uv_not_pip(tmp_path: Path) -> None:
     assert not matches(regex, "uv add requests")
 
 
+def test_pip_ban_matches_pip_exe(tmp_path: Path) -> None:
+    (regex,) = commands(rules_of(tmp_path, "Always use `uv`, not pip."), "forbid-command")
+    assert matches(regex, "pip.exe install requests")
+    assert matches(regex, r"C:\Py\Scripts\pip.exe install requests")
+    assert not matches(regex, "uv pip install requests")
+    assert not matches(regex, "pipx install requests")
+    (any_regex,) = set(
+        commands(
+            rules_of(tmp_path, "Never `pip install`; that includes `uv pip install`."),
+            "forbid-command",
+        )
+    )
+    assert matches(any_regex, "pip3.exe install requests")
+    assert matches(any_regex, "uv pip install requests")
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "Never `pip install` anything; that includes `uv pip install`.",
+        "Never `pip install` anything. That includes `uv pip install`.",
+        "- Never `pip install` anything (that includes `uv pip install`).",
+        "Never run `pip install`, even `uv pip install`.",
+    ],
+)
+def test_pip_ban_that_includes_uv_pip(tmp_path: Path, prose: str) -> None:
+    (regex,) = set(commands(rules_of(tmp_path, prose), "forbid-command"))
+    assert matches(regex, "pip install requests")
+    assert matches(regex, "uv pip install requests")
+    assert not matches(regex, "uv add requests")
+
+
 def test_use_pnpm_never_npm_or_yarn(tmp_path: Path) -> None:
     regexes = commands(rules_of(tmp_path, "Use pnpm, never npm or yarn."), "forbid-command")
     assert len(regexes) == 2

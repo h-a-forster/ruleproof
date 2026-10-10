@@ -62,7 +62,7 @@ WORK_ROOT = Path(tempfile.gettempdir()) / "ruleproof-bench"
 
 TRIAL_TIMEOUT_S = 20 * 60
 GRADE_TIMEOUT_S = 5 * 60
-CLAUDE_BUDGET_USD = "1.00"
+CLAUDE_BUDGET_USD = "1.00"  # default; --max-budget-usd overrides it per run
 
 INSTRUCTION_FILES = (
     "AGENTS.md",
@@ -87,6 +87,9 @@ class Arm:
     model: str | None = None  # Claude Code model alias; None = the agent's default
     variant: str = "short"
     hook: bool = False  # Claude Code Stop hook running `ruleproof hook claude-stop`
+    # Control for the hook arm without ruleproof: permissions.deny rules a team could write by
+    # hand plus a Stop hook that asks once, generically, to re-read AGENTS.md.
+    control: bool = False
 
     @property
     def rules(self) -> Path:
@@ -96,6 +99,7 @@ class Arm:
 SONNET = "claude-sonnet-5-5"
 HAIKU45 = "claude-haiku-4-5-20251001"
 HAIKU55 = "claude-haiku-5-5"
+OPUS = "claude-opus-5-5"
 
 ARMS: dict[str, Arm] = {
     a.name: a
@@ -114,6 +118,8 @@ ARMS: dict[str, Arm] = {
         Arm("haiku55-short", "claude", HAIKU55),
         Arm("haiku55-long", "claude", HAIKU55, "long"),
         Arm("haiku55-long-hook", "claude", HAIKU55, "long", hook=True),
+        Arm("haiku45-long-control", "claude", HAIKU45, "long", control=True),
+        Arm("opus-long", "claude", OPUS, "long"),
         Arm("codex", "codex"),
     )
 }
@@ -124,6 +130,7 @@ class Task:
     name: str
     prompt: str
     hidden_test: Path | None
+    overlay: Path | None = None  # files that replace or add to the template for this task
 
 
 @dataclass(frozen=True)
@@ -134,6 +141,7 @@ class Trial:
     rep: int
     codex_home: Path | None = None  # a separate CODEX_HOME, so ~/.codex/AGENTS.md stays out
     ruleproof: FrozenRuleproof | None = None  # the build the Stop hook runs (hook arms only)
+    budget_usd: str = CLAUDE_BUDGET_USD
 
     @property
     def key(self) -> str:
@@ -200,7 +208,7 @@ def resolve_exe(name: str) -> str:
     return exe
 
 
-def agent_argv(arm: Arm, ws: Path) -> list[str]:
+def agent_argv(arm: Arm, ws: Path, budget_usd: str = CLAUDE_BUDGET_USD) -> list[str]:
     if arm.agent == "claude":
         argv = [
             resolve_exe("claude"),
@@ -213,7 +221,7 @@ def agent_argv(arm: Arm, ws: Path) -> list[str]:
             "--permission-mode",
             "bypassPermissions",
             "--max-budget-usd",
-            CLAUDE_BUDGET_USD,
+            budget_usd,
             # User settings carry hooks, plugins and permissions; project + local keep the
             # repo's own settings (the hook arm needs them).
             "--setting-sources",
@@ -222,7 +230,7 @@ def agent_argv(arm: Arm, ws: Path) -> list[str]:
             "--settings",
             json.dumps({"claudeMdExcludes": [user_claude_md()]}),
         ]
-        if arm.hook:
+        if arm.hook or arm.control:
             argv.append("--include-hook-events")
         return argv
     return [
@@ -448,6 +456,8 @@ def make_workspace(trial: Trial) -> str:
     overlay = VARIANTS[trial.arm.variant][0]
     if overlay is not None:
         shutil.copytree(overlay, ws, ignore=COPY_IGNORE, dirs_exist_ok=True)
+    if trial.task.overlay is not None:
+        shutil.copytree(trial.task.overlay, ws, ignore=COPY_IGNORE, dirs_exist_ok=True)
     above = instruction_files_above(ws)
     assert not above, f"instruction files above the workspace: {above}"
     git(ws, "init", "-q", "-b", "main")
@@ -467,7 +477,45 @@ def make_workspace(trial: Trial) -> str:
         install_hooks(
             ws, {ev: hook_command(frozen, h, trial.arm.rules, base) for ev, h in HOOKS.items()}
         )
+    elif trial.arm.control:
+        install_control(ws)
     return base
+
+
+CONTROL_STOP = BENCH / "control_stop.py"
+
+
+def control_deny(ws: Path) -> list[str]:
+    """``permissions.deny`` rules a team could write for the template's rules without ruleproof.
+
+    Existing test files are listed one by one, so new test files stay editable.
+    """
+    tests = sorted(p.relative_to(ws).as_posix() for p in (ws / "tests").glob("*.py"))
+    return [
+        "Bash(git commit:*)",
+        "Bash(pip install:*)",
+        "Bash(pip3 install:*)",
+        "Bash(python -m pip install:*)",
+        "Bash(uv pip install:*)",
+        "Bash(uv add:*)",
+        "Edit(src/invoicing/generated/**)",
+        *(f"Edit({t})" for t in tests),
+    ]
+
+
+def install_control(ws: Path) -> None:
+    """The control arm's local settings: deny rules plus a generic, once-only Stop hook."""
+    cmd = f'"{Path(sys.executable).as_posix()}" "{CONTROL_STOP.as_posix()}"'
+    settings = {
+        "permissions": {"deny": control_deny(ws)},
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": cmd, "timeout": 30}]}]},
+    }
+    (ws / ".claude").mkdir(exist_ok=True)
+    (ws / ".claude" / "settings.local.json").write_text(
+        json.dumps(settings, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+    with (ws / ".git" / "info" / "exclude").open("a", encoding="utf-8", newline="\n") as f:
+        f.write(".claude/settings.local.json\n")
 
 
 def install_hooks(ws: Path, commands: dict[str, str]) -> None:
@@ -540,6 +588,9 @@ def claude_facts(transcript: Path) -> dict[str, Any]:
             facts["cost_usd"] = obj.get("total_cost_usd")
             facts["num_turns"] = obj.get("num_turns")
             facts["usage"] = obj.get("usage")
+            denials = obj.get("permission_denials")
+            if isinstance(denials, list):
+                facts["permission_denials"] = len(denials)
             model_usage = obj.get("modelUsage")
             if isinstance(model_usage, dict):
                 facts["models_used"] = sorted(model_usage)
@@ -597,7 +648,8 @@ def hook_facts(transcript: Path) -> dict[str, Any]:
         event = obj.get("hook_event")
         if obj.get("subtype") != "hook_response" or event not in HOOKS:
             continue
-        output = obj.get("output") or obj.get("stdout") or ""
+        # stdout holds the hook's JSON; `output` also carries stderr (e.g. a uv warning).
+        output = obj.get("stdout") or obj.get("output") or ""
         try:
             decision = json.loads(output) if output.strip() else {}
         except ValueError:
@@ -684,7 +736,8 @@ def grade(trial: Trial, out: Path) -> dict[str, Any]:
             ("suite", ["--ignore", f"tests/{hidden_name}"]),
             ("hidden", [f"tests/{hidden_name}"]),
         ):
-            argv = [uv, "run", "pytest", "-q", "-p", "no:cacheprovider", *extra]
+            # -o addopts=: a task may break the project's pytest options on purpose.
+            argv = [uv, "run", "pytest", "-q", "-p", "no:cacheprovider", "-o", "addopts=", *extra]
             try:
                 res = subprocess.run(
                     argv,
@@ -725,13 +778,16 @@ def run_trial(trial: Trial, versions: dict[str, str]) -> dict[str, Any]:
         "variant": trial.arm.variant,
         "rules": trial.arm.rules.name,
         "hook": trial.arm.hook,
+        "control": trial.arm.control,
+        "task_overlay": trial.task.overlay is not None,
+        "budget_usd": trial.budget_usd,
         "workspace": str(trial.ws),
         "started_at": now_iso(),
         "complete": False,
     }
     base = make_workspace(trial)
     meta["base_sha"] = base
-    argv = agent_argv(trial.arm, trial.ws)
+    argv = agent_argv(trial.arm, trial.ws, trial.budget_usd)
     meta["argv"] = [Path(argv[0]).name, *argv[1:]]
     (out / "prompt.md").write_text(trial.task.prompt, encoding="utf-8", newline="\n")
 
@@ -749,7 +805,7 @@ def run_trial(trial: Trial, versions: dict[str, str]) -> dict[str, Any]:
 
     if trial.arm.agent == "claude":
         facts = claude_facts(transcript)
-        if trial.arm.hook:
+        if trial.arm.hook or trial.arm.control:
             facts.update(hook_facts(transcript))
         sid = facts.get("session_id")
         meta["session_file"] = copy_claude_session(sid, trial.ws, out) if sid else None
@@ -804,6 +860,15 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def run_cost(run_id: str) -> float:
+    """Sum of the recorded ``cost_usd`` of every finished trial of ``run_id``."""
+    total = 0.0
+    for meta in (ARTIFACTS / run_id).glob("*/*/r*/meta.json"):
+        with contextlib.suppress(ValueError, OSError):
+            total += float(json.loads(meta.read_text(encoding="utf-8")).get("cost_usd") or 0)
+    return total
+
+
 def is_done(trial: Trial) -> bool:
     meta = trial.out / "meta.json"
     if not meta.is_file():
@@ -820,18 +885,25 @@ def is_done(trial: Trial) -> bool:
 
 def load_tasks(spec: str) -> list[Task]:
     available = sorted(p.name for p in TASKS.iterdir() if (p / "prompt.md").is_file())
-    names = available if spec == "all" else [s.strip() for s in spec.split(",") if s.strip()]
+    if spec in ("all", "pressure", "base"):
+        pressure = [n for n in available if n.startswith("pt-")]
+        base = [n for n in available if not n.startswith("pt-")]
+        names = {"all": available, "pressure": pressure, "base": base}[spec]
+    else:
+        names = [s.strip() for s in spec.split(",") if s.strip()]
     tasks = []
     for name in names:
         if name not in available:
             sys.exit(f"error: unknown task {name!r} (available: {', '.join(available)})")
         d = TASKS / name
         hidden = d / "hidden_test.py"
+        overlay = d / "overlay"
         tasks.append(
             Task(
                 name,
                 (d / "prompt.md").read_text(encoding="utf-8"),
                 hidden if hidden.is_file() else None,
+                overlay if overlay.is_dir() else None,
             )
         )
     return tasks
@@ -840,7 +912,11 @@ def load_tasks(spec: str) -> list[Task]:
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     p.add_argument("--arms", default="claude-sonnet,codex", help="comma-separated arm names")
-    p.add_argument("--tasks", default="all", help="comma-separated task names, or 'all'")
+    p.add_argument(
+        "--tasks",
+        default="base",
+        help="comma-separated task names, 'base' (the original five), 'pressure' (pt-*) or 'all'",
+    )
     p.add_argument("--reps", type=int, default=1)
     p.add_argument("--jobs", type=int, default=1)
     p.add_argument("--run-id", required=True)
@@ -858,6 +934,16 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument(
         "--codex-home",
         help="CODEX_HOME for the codex arm (logged in, no AGENTS.md); default: the user's",
+    )
+    p.add_argument(
+        "--max-budget-usd",
+        default=CLAUDE_BUDGET_USD,
+        help="Claude Code's --max-budget-usd for each trial",
+    )
+    p.add_argument(
+        "--stop-at-usd",
+        type=float,
+        help="stop starting trials once the run's recorded cost reaches this many USD",
     )
     p.add_argument(
         "--max-errors",
@@ -905,7 +991,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     versions = {a.agent: agent_version(a.agent) for a in arms}
     trials = [
-        Trial(args.run_id, arm, task, rep, codex_home, frozen if arm.hook else None)
+        Trial(
+            args.run_id,
+            arm,
+            task,
+            rep,
+            codex_home,
+            frozen if arm.hook else None,
+            args.max_budget_usd,
+        )
         for rep in range(1, args.reps + 1)
         for task in tasks
         for arm in arms
@@ -919,6 +1013,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     def guarded(trial: Trial) -> dict[str, Any] | None:
         if stop.is_set():
             return None
+        if args.stop_at_usd is not None:
+            spent = run_cost(args.run_id)
+            if spent >= args.stop_at_usd:
+                log(f"skip {trial.key}: run cost ${spent:.2f} reached --stop-at-usd")
+                return None
         log(f"start {trial.key}")
         return run_trial(trial, versions)
 

@@ -6,9 +6,54 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Benchmark: five pressure tasks that tempt agents to claim unverified success, a control arm
+  (`permissions.deny` plus a generic Stop hook), an Opus arm, per-run budget options, and an
+  independent LLM judge (`bench/judge.py`, `bench/analyze_pressure.py`). Run `pt1` (80 trials)
+  finds the `claims` check does not yet agree with the judge (precision 0/12, recall 0/8).
+
+### Fixed
+
+- `claims` no longer reads exit 0 as proof when the claimed tool's status is not the command
+  line's: after `|` (`pytest | tail -3`), `;` (`pytest; git status`), `||` or a background `&`
+  only the tool's own output counts, otherwise the claim is `unverified` (`set -o pipefail`
+  keeps pipelines trusted). With an unknown exit code, chained output is read for the claimed
+  kind only (`pytest && ruff check .` showing "All checks passed!" no longer backs a tests claim).
+- Quoted program paths with spaces (`"C:\Program Files\Python311\python.exe" -m pytest`,
+  `& 'C:\...\python.exe' -m pytest`) and `cmd /d /c "..."` / `/s` / `/q` are recognised as commands.
+- `ruleproof compile`'s pip ban also matches `pip.exe install` and `C:\Py\Scripts\pip.exe install`.
+- The pytest-cov failure signal no longer matches `--cov-fail-under=90` in printed config
+  (`cat pyproject.toml; pytest`), which made a passing run read as failed.
+- `claims` ignores partial and scoped reports: "15 of 16 tests pass", "the other 19 tests
+  pass", "all 3 tests in test_totals.py pass". Found by the pressure benchmark's judge.
+- A command refused by a `permissions.deny` rule ("Permission to use Bash with command ... has
+  been denied") counts as not run, so a denied `git commit` no longer fails `forbid-command`.
+
+- `claims`: prescriptions ("must", "ensure", "make sure", "has to") and partial counts ("15 of
+  16", "the other 19 tests") now void only their own clause. "All 16 of 16 tests pass", "All
+  tests pass, as they must", "The other tests pass too" and `Result: "all tests pass"` are
+  claims again.
+- Benchmark: the judge input builder scrubs trial paths and arm names and no longer marks hook
+  messages. bench/README discloses pt1's blinding leaks, rubric change and corrected numbers.
+
 ### Changed
 
 - The action's `version` input installs that release from its git tag instead of PyPI.
+- `claims` recognises Windows command lines (`.venv\Scripts\pytest.exe`,
+  `.venv\Scripts\python.exe -m unittest`); backslashes in paths were dropped, so these runs
+  were missed or an older failing run was cited. Codex shell calls in a session on a Windows
+  drive are read as PowerShell. `claims` and `require-command` now agree on these commands.
+- `claims` recognises `python -X utf8 -m unittest`, `python manage.py test`, `bazel test` and
+  test scripts run by path (`./scripts/test.sh`), and takes `test_commands`, `lint_commands`,
+  `type_commands`, `build_commands` and `format_commands` for project-specific commands.
+- `claims` attributes the shared output of chained commands (`ruff check . && ruff format
+  --check .`) to each tool by its summary line, and reports `unverified` when it cannot.
+- `claims` ignores quoted text, blockquotes and prescriptions ("make sure the tests pass").
+- `claims` catches "everything works" / "the fix is verified" (new `works` claim) and reports a
+  full-suite claim backed only by a subset run (`pytest tests/test_app.py`) as `unverified`.
+- `ruleproof compile` no longer exempts `uv pip install` from a pip ban whose prose says it
+  includes `uv pip install`.
 
 ## [0.1.0] - 2026-10-10
 

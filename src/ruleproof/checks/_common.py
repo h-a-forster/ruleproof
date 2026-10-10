@@ -88,7 +88,7 @@ def globs_match(path: str, patterns: Iterable[str] | None, scope: str | None = N
 _DENIED = re.compile(
     r"doesn't want to proceed|tool use was rejected|rejected by (?:the )?user"
     r"|requested permissions? to use|haven't granted it"
-    r"|permission to use \w+ (?:has been|was) denied"
+    r"|permission to use \w+(?: with command [\s\S]*?)? (?:has been|was) denied"
     r"|\bhook (?:error|blocked)|blocked by (?:a |the )?(?:\w+ )?hook|PreToolUse:\w+ hook"
     r"|user (?:denied|declined)|was (?:denied|cancelled|canceled) by the user",
     re.IGNORECASE,
@@ -147,8 +147,24 @@ def path_key(ctx: Context) -> Callable[[str], str]:
     return str.lower if is_windows_repo(ctx) else str
 
 
-def is_powershell(event: Event) -> bool:
-    return (event.tool or "").lower() in ("powershell", "pwsh")
+_CODEX_SHELL_TOOLS = frozenset(
+    ["exec_command", "exec", "shell", "shell_command", "local_shell", "container.exec"]
+)
+
+
+def is_powershell(event: Event, ctx: Context | None = None) -> bool:
+    """A command run by PowerShell: a PowerShell tool, or a Codex shell call in a session on
+    a Windows drive (Codex runs commands in PowerShell there without recording the shell)."""
+    tool = (event.tool or "").lower()
+    if tool in ("powershell", "pwsh"):
+        return True
+    session = ctx.session if ctx else None
+    return (
+        session is not None
+        and session.agent == "codex"
+        and tool in _CODEX_SHELL_TOOLS
+        and bool(re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", session.cwd or ""))
+    )
 
 
 def counted_edits(
@@ -183,7 +199,7 @@ def counted_edits(
             if rel is not None and keep(rel):
                 out.append((ev, rel))
         elif ev.kind is EventKind.COMMAND:
-            for target in shell_writes(ev.text, is_powershell(ev)):
+            for target in shell_writes(ev.text, is_powershell(ev, ctx)):
                 if target is None:
                     if not scope and not edit_paths:
                         out.append((ev, None))
@@ -212,6 +228,8 @@ _PS_HINT = re.compile(
     r"|Push|Pop|Rename|Expand|Compress|Update|Wait|Read)-[A-Z][A-Za-z]+\b|\$env:"
 )
 _WORD_START = " \t\r\n;&|(){}"
+# A quoted executable path ("C:\Program Files\Python311\python.exe"): not prose, even with spaces.
+_PROGRAM_PATH = re.compile(r"^[^\n]*[\\/][^\\/\s]+$")
 
 
 class _Masker:
@@ -243,6 +261,22 @@ class _Masker:
                 j += 1  # an apostrophe inside a word: don't, it's
             else:
                 return j
+
+    def program_end(self, i: int) -> int | None:
+        """End of the quoted path to a program at ``i`` when it stands in command position
+        (``"C:\\Program Files\\Python\\python.exe" -m pytest``, ``& 'C:\\a b\\py.exe'``)."""
+        s = self.s
+        k = i - 1
+        while k >= 0 and s[k] in " \t":
+            k -= 1
+        if k >= 0 and s[k] not in ";&|(\n{":
+            return None
+        j = s.find(s[i], i + 1)
+        if j == -1 or not _PROGRAM_PATH.match(s[i + 1 : j]):
+            return None
+        if j + 1 < len(s) and not s[j + 1].isspace() and s[j + 1] not in ";&|)":
+            return None
+        return j + 1
 
     def scan(self, i: int, close: str | None) -> int:
         """Mask from ``i``; with ``close`` (``)`` or a backtick) return after the closer."""
@@ -290,6 +324,11 @@ class _Masker:
             if s.startswith("$((", i):
                 i = self.arithmetic(i + 3)
                 continue
+            if c in "'\"":
+                program = self.program_end(i)
+                if program is not None:
+                    i = program
+                    continue
             if c == "'":
                 if i > 0 and s[i - 1] == "$" and not self.ps:
                     i = self.ansi_c(i)
@@ -411,7 +450,10 @@ _PS_C = re.compile(
     r"\s+-(?:c|command)\s+",
     re.IGNORECASE,
 )
-_CMD_C = re.compile(r"(?:^|(?<=[\s;&|(]))(?:\S*[\\/])?cmd(?:\.exe)?\s+/[cCkK]\s+")
+_CMD_C = re.compile(
+    r"(?:^|(?<=[\s;&|(]))(?:\S*[\\/])?cmd(?:\.exe)?(?:\s+/[a-z](?::\S+)?)*?\s+/[ck]\s+",
+    re.IGNORECASE,
+)
 _EVAL = re.compile(
     r"(?:^|(?<=[\s;&|(]))(?:eval|iex|Invoke-Expression|ssh(?:\s+-\w+(?:\s+[^\s\"'-]\S*)?)*"
     r"\s+[^\s\"'-]\S*)\s+",
@@ -550,7 +592,14 @@ _PREFIX_VALUE_OPTIONS = frozenset(
     + ["--chdir", "-s", "--signal", "-k", "--kill-after"]
 )
 _PYTHON = re.compile(r"^(?:python[\d.]*|py)$")
+_PYTHON_VALUE_OPTIONS = frozenset(["-X", "-W", "--check-hash-based-pycs"])
 _NOT_A_RUN = frozenset(["--version", "-V", "--help", "-h", "--collect-only", "--co"])
+
+
+# A backslash between path characters (``.venv\Scripts\pytest.exe``, ``C:\repo``) is a
+# Windows path separator, not a POSIX escape: Codex runs Windows commands in PowerShell
+# without saying so, and Git Bash keeps such paths working.
+_WINDOWS_PATH = re.compile(r"(?:^|[\s=])(?:[A-Za-z]:|\.{1,2}|[\w.-]+)\\[\w.-]")
 
 
 def _tokens(segment: str, ps: bool) -> list[str]:
@@ -558,7 +607,7 @@ def _tokens(segment: str, ps: bool) -> list[str]:
         lex = shlex.shlex(segment, posix=True)
         lex.whitespace_split = True
         lex.commenters = ""
-        if ps:
+        if ps or _WINDOWS_PATH.search(segment):
             lex.escape = ""
         return list(lex)
     except ValueError:
@@ -598,8 +647,21 @@ def _candidates(words: list[str]) -> Iterable[list[str]]:
         yield [_program(words[pos]), *words[pos + 1 :]]
         prog = _program(words[pos]).lower()
         nxt = words[pos + 1] if pos + 1 < len(words) else ""
-        if (prog, nxt) in _PREFIX_2 or (_PYTHON.match(prog) and nxt == "-m"):
+        if (prog, nxt) in _PREFIX_2:
             pos += 2
+        elif _PYTHON.match(prog):
+            # `python -X utf8 -m unittest`, `py -3 -m pytest`, `python manage.py test`
+            j = pos + 1
+            while j < len(words) and words[j].startswith("-") and words[j] not in ("-m", "-c"):
+                j += 2 if words[j] in _PYTHON_VALUE_OPTIONS else 1
+            if j < len(words) and words[j] == "-m":
+                pos = j + 1
+            elif j < len(words) and words[j].lower().endswith(".py"):
+                pos = j
+                yield [_program(words[pos]), *words[pos + 1 :]]
+                return
+            else:
+                return
         elif prog in _PREFIX_1:
             pos += 1
         else:
@@ -620,11 +682,114 @@ def invokes(rx: re.Pattern[str], command: str, powershell: bool = False) -> bool
     ``cat pytest.ini`` or ``uv add pytest`` do not count. Invocations that only print
     information (``--version``, ``--help``, ``--collect-only``) do not count either.
     """
+    return bool(split_invocations(rx, command, powershell)[0])
+
+
+def split_invocations(
+    rx: re.Pattern[str], command: str, powershell: bool = False
+) -> tuple[list[list[str]], list[list[str]]]:
+    """(the invocations of the tool ``rx`` names, from the tool on; the other simple
+    commands) in ``command``, with the matching rules of ``invokes``."""
+    hits: list[list[str]] = []
+    others: list[list[str]] = []
     for words in simple_commands(command, powershell):
-        for cand in _candidates(words):
-            if rx.match(" ".join(cand)) and not _NOT_A_RUN.intersection(cand[1:]):
-                return True
-    return False
+        hit = _invocation(rx, words)
+        if hit is None:
+            others.append(words)
+        else:
+            hits.append(hit)
+    return hits, others
+
+
+def _invocation(rx: re.Pattern[str], words: list[str]) -> list[str] | None:
+    return next(
+        (
+            cand
+            for cand in _invocations(words)
+            if rx.match(" ".join(cand)) and not _NOT_A_RUN.intersection(cand[1:])
+        ),
+        None,
+    )
+
+
+def matches_invocation(rx: re.Pattern[str], words: list[str]) -> bool:
+    """True when the simple command ``words`` runs the tool ``rx`` names."""
+    return _invocation(rx, words) is not None
+
+
+_PIPEFAIL = re.compile(r"\bset\b[^;&|\n]*\bpipefail\b")
+_NEUTRAL = frozenset(["(", ")", "{", "}", "$(", "`"])
+_WRAPPERS = frozenset(
+    ["sh", "bash", "zsh", "dash", "ksh", "cmd", "pwsh", "powershell", "eval", "iex", "ssh"]
+)
+
+
+def exit_belongs_to(command: str, powershell: bool, hit: Callable[[list[str]], bool]) -> bool:
+    """True when the exit status of ``command`` is that of a command ``hit`` accepts.
+
+    That holds when every separator between the last such command and the end is ``&&``
+    (or ``|`` after ``set -o pipefail``). After ``|``, ``;``, ``||`` or a background ``&`` the
+    status belongs to something else (``pytest | tail`` exits with tail's status), and so it
+    does for a command that follows ``||`` (``a || pytest``) or sits in ``$(...)``.
+    """
+    views = [v for v in _views(command, powershell) if not v.raw]
+    pipefail = bool(_PIPEFAIL.search(views[0].masked))
+    plans: list[tuple[list[tuple[bool, object]], int]] = []
+    found = False
+    for view in views:
+        seq: list[tuple[bool, object]] = []  # (is_segment, words | separator)
+        pos = 0
+        for m in _SEPARATOR.finditer(view.masked):
+            words = [w for w in _tokens(view.masked[pos : m.start()], view.ps) if w.strip()]
+            if words:
+                seq.append((True, words))
+            seq.append((False, m.group()))
+            pos = m.end()
+        words = [w for w in _tokens(view.masked[pos:], view.ps) if w.strip()]
+        if words:
+            seq.append((True, words))
+        hits = [k for k, (seg, v) in enumerate(seq) if seg and hit(v)]  # type: ignore[arg-type]
+        found = found or bool(hits)
+        plans.append((seq, hits[-1] if hits else -1))
+    if not found:
+        return True
+    for seq, anchor in plans:
+        if anchor < 0:
+            wrappers = [
+                k
+                for k, (seg, v) in enumerate(seq)
+                if seg and _program(v[0]).lower() in _WRAPPERS  # type: ignore[index]
+            ]
+            if not wrappers:
+                continue
+            anchor = wrappers[-1]
+        last = max((k for k, (seg, _) in enumerate(seq) if seg), default=-1)
+        for k in range(anchor - 1, -1, -1):
+            seg, v = seq[k]
+            if seg or v in ("(", "{"):
+                if seg:
+                    break
+                continue
+            if v in ("||", "$(", "`"):
+                return False
+            break
+        ok = {"&&", "|"} if pipefail else {"&&"}
+        for k in range(anchor + 1, len(seq)):
+            seg, v = seq[k]
+            if seg or v in _NEUTRAL or v in ok:
+                continue
+            if k < last or v == "&":
+                return False
+    return True
+
+
+def _invocations(words: list[str]) -> Iterable[list[str]]:
+    """``_candidates``, plus the command with a script path kept whole (``./scripts/test.sh``,
+    ``.\\test.ps1``), so a pattern can name a script without matching the ``test`` builtin."""
+    yield from _candidates(words)
+    head = next((k for k, w in enumerate(words) if not _ASSIGNMENT.match(w)), None)
+    if head is not None and re.search(r"[\\/]", words[head]):
+        yield [words[head].replace("\\", "/"), *words[head + 1 :]]
 
 
 # --- shell writes -----------------------------------------------------------------------
@@ -710,57 +875,72 @@ def command_outcome(event: Event) -> tuple[Outcome, str]:
 
 
 _M = re.MULTILINE
-_FAILURE = [
-    re.compile(r"^.*\b[1-9]\d* (?:failed|errors?)\b.* in [\d.]+s\b", _M),  # pytest summary
-    re.compile(r"\bno tests ran\b"),  # pytest: nothing collected
-    re.compile(r"^(?:FAILED|ERROR)\b", _M),  # pytest short summary, unittest
-    re.compile(r"^\S+::\S+ (?:FAILED|ERROR)\b", _M),  # pytest -v
-    re.compile(r"Required test coverage of .* not reached|\bfail-under=", _M),  # pytest-cov
-    re.compile(r"^\s*Tests?:?\s+.*\b[1-9]\d* failed\b", _M),  # jest / vitest
-    re.compile(r"^\s*Test Files\s+.*\b[1-9]\d* failed\b", _M),  # vitest
-    re.compile(r"^(?:FAIL\b|--- FAIL:)", _M),  # go test
-    re.compile(r"test result: FAILED\b"),  # cargo test
-    re.compile(r"^error(?:\[E\d{4}\])?: (?:could not compile|aborting)|^error\[E\d{4}\]", _M),
-    re.compile(r"^Found [1-9]\d* errors? in \d+ files?", _M),  # mypy
-    re.compile(r"^\d+ files? would be reformatted|^Would reformat:", _M),  # ruff/black --check
-    re.compile(r"\berror TS\d+:"),  # tsc
-    re.compile(r"\b\d+ problems? \([1-9]\d* errors?", _M),  # eslint
-    re.compile(r"\bBUILD FAIL(?:ED|URE)\b|^Build FAILED\.", _M),  # gradle, maven, dotnet
-    re.compile(r"^Failed!\s+-\s+Failed:\s+[1-9]", _M),  # dotnet test
-    re.compile(r"^npm (?:ERR!|error) ", _M),
+# Each signal names the kind of tool that prints it, so the output of a chained command
+# (``ruff check . && ruff format --check .``) can be attributed (see ``output_verdict``).
+_FAILURE: list[tuple[str, re.Pattern[str]]] = [
+    ("tests", re.compile(r"^.*\b[1-9]\d* (?:failed|errors?)\b.* in [\d.]+s\b", _M)),  # pytest
+    ("tests", re.compile(r"\bno tests ran\b")),  # pytest: nothing collected
+    ("tests", re.compile(r"^(?:FAILED|ERROR)\b", _M)),  # pytest short summary, unittest
+    ("tests", re.compile(r"^\S+::\S+ (?:FAILED|ERROR)\b", _M)),  # pytest -v
+    ("tests", re.compile(r"Required test coverage of .* not reached|\bless than fail-under=", _M)),
+    ("tests", re.compile(r"^\s*Tests?:?\s+.*\b[1-9]\d* failed\b", _M)),  # jest / vitest
+    ("tests", re.compile(r"^\s*Test Files\s+.*\b[1-9]\d* failed\b", _M)),  # vitest
+    ("tests", re.compile(r"^(?:FAIL\b|--- FAIL:)", _M)),  # go test
+    ("tests", re.compile(r"test result: FAILED\b")),  # cargo test
+    (
+        "build",
+        re.compile(r"^error(?:\[E\d{4}\])?: (?:could not compile|aborting)|^error\[E\d{4}\]", _M),
+    ),
+    ("types", re.compile(r"^Found [1-9]\d* errors? in \d+ files?", _M)),  # mypy
+    ("format", re.compile(r"^\d+ files? would be reformatted|^Would reformat:", _M)),  # ruff/black
+    ("types", re.compile(r"\berror TS\d+:")),  # tsc
+    ("lint", re.compile(r"\b\d+ problems? \([1-9]\d* errors?", _M)),  # eslint
+    ("build", re.compile(r"\bBUILD FAIL(?:ED|URE)\b|^Build FAILED\.", _M)),  # gradle, maven, dotnet
+    ("tests", re.compile(r"^Failed!\s+-\s+Failed:\s+[1-9]", _M)),  # dotnet test
+    ("", re.compile(r"^npm (?:ERR!|error) ", _M)),
 ]
 _RUFF_FOUND = re.compile(r"^Found (\d+) errors?(?: \((\d+) fixed, (\d+) remaining\))?", _M)
-_SUCCESS = [
-    re.compile(r"^.*\b[1-9]\d* passed\b.* in [\d.]+s\b", _M),  # pytest summary
-    re.compile(r"^\s*Tests?:?\s+.*\b[1-9]\d* passed\b", _M),  # jest / vitest
-    re.compile(r"^ok\s+\S+\s+(?:[\d.]+s|\(cached\))", _M),  # go test
-    re.compile(r"test result: ok\. [1-9]"),  # cargo test
-    re.compile(r"^All checks passed!", _M),  # ruff
-    re.compile(r"^Success: no issues found", _M),  # mypy
-    re.compile(r"\bBUILD SUCCESS(?:FUL)?\b|^Build succeeded\.", _M),
-    re.compile(r"^\s*Finished\b.*\btarget\(s\) in\b", _M),  # cargo build
-    re.compile(r"^Passed!\s+-\s+Failed:\s+0\b", _M),  # dotnet test
+_SUCCESS: list[tuple[str, re.Pattern[str]]] = [
+    ("tests", re.compile(r"^.*\b[1-9]\d* passed\b.* in [\d.]+s\b", _M)),  # pytest summary
+    ("tests", re.compile(r"^\s*Tests?:?\s+.*\b[1-9]\d* passed\b", _M)),  # jest / vitest
+    ("tests", re.compile(r"^ok\s+\S+\s+(?:[\d.]+s|\(cached\))", _M)),  # go test
+    ("tests", re.compile(r"test result: ok\. [1-9]")),  # cargo test
+    ("lint", re.compile(r"^All checks passed!", _M)),  # ruff
+    ("types", re.compile(r"^Success: no issues found", _M)),  # mypy
+    ("build", re.compile(r"\bBUILD SUCCESS(?:FUL)?\b|^Build succeeded\.", _M)),
+    ("build", re.compile(r"^\s*Finished\b.*\btarget\(s\) in\b", _M)),  # cargo build
+    ("tests", re.compile(r"^Passed!\s+-\s+Failed:\s+0\b", _M)),  # dotnet test
+    ("format", re.compile(r"^\d+ files? (?:already formatted|(?:would be )?left unchanged)", _M)),
 ]
 _UNITTEST_OK = re.compile(r"^Ran [1-9]\d* tests? in [\d.]+s\s*\n+\s*OK\b", _M)
 
 
-def output_verdict(output: str) -> bool | None:
+def output_verdict(output: str, kind: str | None = None) -> bool | None:
     """True/False when command output unambiguously shows success/failure, else None.
 
     Recognises the summary lines of pytest (and pytest-cov), unittest, jest, vitest, go
     test, cargo, ruff, black, mypy, tsc, eslint, gradle, maven and dotnet. Any failure
     signal wins over success; "no tests ran" is a failure and "0 passed" is not a success.
+    With ``kind`` (``tests``, ``lint``, ``types``, ``format``, ``build``) only the signals
+    printed by that kind of tool are read: for one command of a chain.
     """
     if not output:
         return None
-    if any(rx.search(output) for rx in _FAILURE):
+
+    def mine(tag: str) -> bool:
+        return kind is None or tag == kind
+
+    if any(mine(tag) and rx.search(output) for tag, rx in _FAILURE):
         return False
-    for m in _RUFF_FOUND.finditer(output):
+    ruff = list(_RUFF_FOUND.finditer(output)) if mine("lint") else []
+    for m in ruff:
         remaining = m.group(3)
         if remaining is None or int(remaining) > 0:
             return False
-    if _UNITTEST_OK.search(output) or any(rx.search(output) for rx in _SUCCESS):
+    if mine("tests") and _UNITTEST_OK.search(output):
         return True
-    if any(m.group(3) == "0" for m in _RUFF_FOUND.finditer(output)):
+    if any(mine(tag) and rx.search(output) for tag, rx in _SUCCESS):
+        return True
+    if any(m.group(3) == "0" for m in ruff):
         return True
     return None

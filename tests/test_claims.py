@@ -262,7 +262,7 @@ def test_evidence_regexes_do_not_match(claim: str, command: str) -> None:
 
 
 def test_catalogue_is_complete() -> None:
-    assert ALL == ["tests", "lint", "types", "build", "format", "commit", "push"]
+    assert ALL == ["tests", "lint", "types", "build", "format", "commit", "push", "works"]
     for c in CLAIMS.values():
         assert c.phrases and c.description and c.command
 

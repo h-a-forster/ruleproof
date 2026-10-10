@@ -60,7 +60,7 @@ def forbid_command(rule: Rule, ctx: Context) -> RuleResult:
     hits = [
         ev
         for ev in commands_run(ctx)
-        if command_matches(rx, ev.text, rule.params["match_quoted"], is_powershell(ev))
+        if command_matches(rx, ev.text, rule.params["match_quoted"], is_powershell(ev, ctx))
     ]
     if not hits:
         return RuleResult(rule, "pass", f"no command matches {quoted(pattern)}")
@@ -120,7 +120,7 @@ def require_command(rule: Rule, ctx: Context) -> RuleResult:
     runs = [
         ev
         for ev in commands_run(ctx)
-        if command_matches(rx, ev.text, rule.params["match_quoted"], is_powershell(ev))
+        if command_matches(rx, ev.text, rule.params["match_quoted"], is_powershell(ev, ctx))
     ]
     last_edit: Event | None = None
     last_rel: str | None = None
