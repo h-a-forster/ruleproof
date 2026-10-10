@@ -224,7 +224,9 @@ user-level config excluded, 3 runs per task, so n = 15 per row. "Short" is a 55-
 - With both hooks, Haiku 4.5 on the long handbook passed every rule in all 15 runs.
   PreToolUse refused 3 `git commit`s and 5 edits to existing tests before they ran. The Stop
   hook sent 6 runs back to add a changelog entry or verify a claim; all 6 were fixed.
-- The claims check flagged 0 of these 135 runs: every claim was backed by a test run.
+- The claims check flagged 0 of these 135 runs: every claim was backed by a test run. (Scored
+  with the claims check as of commit `e12baf70`; the raw p3 transcripts are not committed, so
+  they cannot be re-scored with the current check.)
 - One repo, and the same authors wrote the tasks, the rules and the checks. See
   [threats to validity](bench/README.md#threats-to-validity).
 

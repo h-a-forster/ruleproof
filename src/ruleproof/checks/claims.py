@@ -388,7 +388,11 @@ def find_claims(text: str, names: list[str]) -> dict[str, str]:
 
 _DEFAULT_IGNORED = ["*.md", "*.rst", "*.txt"]
 _RANK: dict[Status, int] = {"fail": 0, "unverified": 1, "pass": 2, "skip": 3}
-_CONFIG_PARAMS = {c.config: c.description for c in CLAIMS.values() if c.config}
+# First claim per param names it: "works" reuses test_commands but must not relabel it.
+_CONFIG_PARAMS: dict[str, str] = {}
+for _c in CLAIMS.values():
+    if _c.config:
+        _CONFIG_PARAMS.setdefault(_c.config, _c.description)
 
 # Commands that print nothing a verdict could be read from: they do not muddy a chain.
 _QUIET = frozenset(

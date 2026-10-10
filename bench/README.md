@@ -207,7 +207,8 @@ re-aggregated from the committed trial reports (`evaluate.py --run-id p3 --from-
 **Grading is circular.** Every arm is graded by ruleproof, and in the hook arms ruleproof's own
 hooks also steered the agent toward satisfying those same checks. A hook arm's "15/15" means the
 agent ended up passing ruleproof, not that an independent grader agrees it followed the rules.
-There is no independent grader yet (the hidden tests grade the task, not the rules).
+Run p3 has no independent grader (the hidden tests grade the task, not the rules); the later
+pressure run adds a Claude judge, see [Pressure tasks](#pressure-tasks-run-pt1).
 
 **Significance.** Two-sided Fisher exact tests on "all rules followed", recomputed from the
 trial reports in `results/p3/trials/`:
@@ -475,8 +476,8 @@ was not recorded). About $25 in total.
 - Small n: 3 repetitions of 5 tasks per arm, so effectively 5 tasks. Intervals are wide; only
   Haiku 4.5 short vs long reaches p < 0.05 (Fisher p ≈ 0.025). Read the other differences
   between arms as indications, not findings.
-- Circular grading: ruleproof grades every arm, and in hook arms it also steered the agent. No
-  independent grader checks rule compliance.
+- Circular grading: ruleproof grades every arm, and in hook arms it also steered the agent. In p3 no
+  independent grader checks rule compliance (pt1 adds a Claude judge, with its own limits).
 - One repo, one AGENTS.md in two lengths, nine rules, all written by the benchmark authors, who
   also wrote the checks. The rules are ones ruleproof can check, which is not a random sample
   of real rules. The long handbook was written for this benchmark: it is realistic in shape,
