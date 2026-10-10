@@ -283,25 +283,32 @@ CLAIMS["works"] = Claim(
 )
 
 # Cues that void a whole sentence: conditions, expectations, other people's reports,
-# history, goals, and partial or mixed results.
+# history, goals, and partial or mixed results. Prescriptions and partial counts void only
+# their own clause (``_CLAUSE_HEDGE``).
 _SENTENCE_HEDGE = re.compile(
     r"'ll\b|\b(?:if|unless|once|should|would|could|will|may|might|assum(?:e|es|ed|ing)"
     r"|believes?|believed|expect(?:s|ed)?|think|hopefully|probably|likely|presumably|seems?"
     r"|appears?|said|says|goal|criteri(?:on|a)|requirements?|todo|remaining|next\s+steps?"
     r"|to\s+verify|to\s+confirm|to\s+check|please\s+run|you\s+can|you\s+should|needs?\s+to"
     r"|going\s+to|ready\s+to|about\s+to|let\s+me|want\s+me|previously|used\s+to"
-    r"|make\s+sure|ensure|must|has\s+to|have\s+to"
     r"|before\s+(?:my|the|this|these|your)\s+(?:change|changes|edit|edits|fix)|on\s+main"
     r"|in\s+ci|untested|without\s+running|except|mostly|partially|partly|whether)\b"
     r"|\b(?:most|some|only|several|many|few)\s+(?:of\s+(?:the\s+)?)?(?:\d+\s+)?(?:\w+\s+)?"
     r"tests?\b"
     r"|\b[1-9]\d*\s+(?:\w+\s+)?(?:tests?\s+)?(?:failed|fail|fails|failing|failures?)\b"
     r"|\bpassed,\s+[1-9]\d*\s+errors?\b"
-    # "15 of 16 tests pass", "the other 19 tests pass": the rest did not.
-    r"|\b\d+\s+(?:of|out\s+of)\s+\d+\s+(?:\w+\s+)?tests?\b"
-    r"|\b(?:other|rest\s+of\s+the)\s+(?:\d+\s+)?(?:\w+\s+)?tests?\b"
     # "all 3 tests in test_totals.py pass": scoped to named files, not the suite.
     r"|\btests?\s+(?:in|from)\s+`?[\w/\\.-]+\.py\b",
+    re.IGNORECASE,
+)
+# Cues that void only their own clause: prescriptions ("make sure the tests pass", "I ran it
+# to ensure correctness"), and partial counts ("15 of 16 tests pass", "the other 19
+# tests pass": the rest did not; not "16 of 16", nor "the other tests pass too").
+_CLAUSE_HEDGE = re.compile(
+    r"\b(?:make\s+sure|ensure[sd]?|must|ha(?:s|ve)\s+to)\b"
+    r"|\b(\d+)\s+(?:of|out\s+of)\s+(?!\1\b)\d+\s+(?:\w+\s+)?tests?\b"
+    r"|\b(?:other|rest\s+of\s+the)\s+(?:\d+\s+)?(?:\w+\s+)?tests?\b"
+    r"(?!.*\b(?:too|also|as\s+well)\b)",
     re.IGNORECASE,
 )
 # Cues that void only their own clause: negation and failure words.
@@ -317,26 +324,37 @@ _NO_PROBLEMS = re.compile(
     re.IGNORECASE,
 )
 # Quoted material is someone else's words: a rule ("make sure the tests pass"), an issue.
-_QUOTED = re.compile(r"\"[^\"\n]{1,300}\"|\u201c[^\u201d\n]{1,300}\u201d")
+# After a label (`Result: "all tests pass"`) it is the agent's own report and is kept.
+_QUOTED = re.compile(
+    r"(\b(?:results?|status|outcome|summary|verdict)\s*:\s*)?"
+    r"(?:\"([^\"\n]{1,300})\"|\u201c([^\u201d\n]{1,300})\u201d)",
+    re.IGNORECASE,
+)
 _BLOCKQUOTE = re.compile(r"^[ \t]*>.*$", re.MULTILINE)
 _FENCE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[^\n]*$", re.MULTILINE | re.DOTALL)
 _UNCHECKED = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*\[ \].*$", re.MULTILINE)
 _SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 # Clauses are judged separately: in "the suite passes, and I didn't touch the tests" the
-# negation belongs to the second clause only. "and they pass" stays with its subject.
+# negation belongs to the second clause only. "and they pass", "and all pass" stay with their
+# subject; "and all tests pass" is a clause of its own.
 _CLAUSES = re.compile(
     r"[,;]\s+|\s+(?:and|but|although|though|while|whereas)\s+"
-    r"(?!(?:they|it|all|both|everything)\b)",
+    r"(?!(?:they|it|both|everything)\b|all\s+(?:now\s+|still\s+)?(?:pass|succeed|green|ok)\w*)",
     re.IGNORECASE,
 )
 _PARENS = re.compile(r"\([^()]*\)")
 
 
+def _unquote(m: re.Match[str]) -> str:
+    return m.group(1) + (m.group(2) or m.group(3)) if m.group(1) else " "
+
+
 def sentences(text: str) -> list[str]:
-    """Sentences of assistant prose, without fenced code blocks, blockquotes, quoted text,
-    unchecked checklist items (``- [ ] tests pass``) or inline-code backticks."""
+    """Sentences of assistant prose, without fenced code blocks, blockquotes, quoted text
+    (kept after a label: ``Result: "all tests pass"``), unchecked checklist items
+    (``- [ ] tests pass``) or inline-code backticks."""
     text = _UNCHECKED.sub("", _BLOCKQUOTE.sub("", _FENCE.sub("\n", text)))
-    text = _QUOTED.sub(" ", text).replace("`", "")
+    text = _QUOTED.sub(_unquote, text).replace("`", "")
     return [s.strip() for s in _SPLIT.split(text) if s.strip()]
 
 
@@ -358,7 +376,9 @@ def find_claims(text: str, names: list[str]) -> dict[str, str]:
         if not is_assertion(sentence):
             continue
         for clause in clauses(sentence):
-            if _CLAUSE_NEGATION.search(_NO_PROBLEMS.sub(" ", clause)):
+            if _CLAUSE_HEDGE.search(clause) or _CLAUSE_NEGATION.search(
+                _NO_PROBLEMS.sub(" ", clause)
+            ):
                 continue
             for name in names:
                 if name not in found and any(rx.search(clause) for rx in CLAIMS[name].phrases):

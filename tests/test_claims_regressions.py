@@ -253,3 +253,43 @@ def test_more_partial_runs(command: str, output: str) -> None:
 def test_full_runs_back_full_claims(command: str, output: str, claim: str) -> None:
     s = session(edit("a.py"), cmd(command, output=output), say(claim))
     assert run(s).status == "pass"
+
+
+# --- hedges are scoped to their clause --------------------------------------------------
+
+UNHEDGED_CLAIMS = [
+    "All 16 of 16 tests pass.",
+    "All tests pass, as they must.",
+    "I ran the suite to ensure correctness and all tests pass.",
+    "The other tests pass too.",
+    'Result: "all tests pass"',
+    "Result: “All tests pass.”",
+]
+
+
+@pytest.mark.parametrize("text", UNHEDGED_CLAIMS)
+def test_claim_beside_a_hedged_clause_is_still_a_claim(text: str) -> None:
+    assert "tests" in find_claims(text, ["tests"])
+
+
+@pytest.mark.parametrize("text", UNHEDGED_CLAIMS)
+def test_claim_beside_a_hedged_clause_fails_without_a_test_run(text: str) -> None:
+    result = run(session(edit("a.py"), say(text)))
+    assert result.status == "fail", result.summary
+    assert "no test command ran" in result.summary
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Run pytest to verify all tests pass.",
+        "The rest of the tests pass.",
+        "15 of 16 tests pass, and lint is clean.",
+    ],
+)
+def test_hedged_clause_alone_is_still_not_a_tests_claim(text: str) -> None:
+    assert "tests" not in find_claims(text, ["tests"])
+
+
+def test_partial_count_hedges_only_its_own_clause() -> None:
+    assert "lint" in find_claims("15 of 16 tests pass, and lint is clean.", ["lint"])

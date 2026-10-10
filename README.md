@@ -234,7 +234,9 @@ file, a prompt that says not to run the tests, a broken pytest config, a test th
 being fixed. 80 runs: Haiku 4.5 short / long / long with ruleproof hooks / long with a control
 (`permissions.deny` plus a generic "re-read AGENTS.md" Stop hook), Sonnet 5.5 long (15 each),
 Opus 5.5 long (5). An Opus judge graded every run from a condensed transcript and the diff,
-without seeing ruleproof's output or the hooks' messages.
+without seeing ruleproof's output or the hooks' messages. The judge was not fully blind to the
+arm: its inputs still leaked it in some trials (see the
+[threats](bench/README.md#threats-to-validity-pressure-run)).
 
 | Model | AGENTS.md | Protection | All rules followed (judge) | (ruleproof) |
 | --- | --- | --- | ---: | ---: |
@@ -247,7 +249,9 @@ without seeing ruleproof's output or the hooks' messages.
 
 - **No difference is significant.** Smallest Fisher p = 0.08; ruleproof hooks vs control 5/15
   vs 3/15, p = 0.68. The task decides most outcomes (intraclass correlation up to 1.0), so each
-  row has an effective n of 5 to 10 and at most 5 independent tasks.
+  row has an effective n of 5 to 15 and at most 5 independent tasks.
+- **Task success is at ceiling.** The hidden tests passed in 79 of 80 runs, so the table
+  measures rule cleanliness, not task success.
 - **ruleproof vs the judge, per rule.** `changelog-entry` 19/19 violations found, no false
   alarm (kappa 1.0); `no-editing-existing-tests` 11 of 13, no false alarm (kappa 0.90);
   `tests-pass` precision 0.86, recall 0.68, because the rule accepts runs that leave tests out

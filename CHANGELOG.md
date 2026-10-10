@@ -30,6 +30,13 @@ All notable changes to this project are documented here. The format follows
 - A command refused by a `permissions.deny` rule ("Permission to use Bash with command ... has
   been denied") counts as not run, so a denied `git commit` no longer fails `forbid-command`.
 
+- `claims`: prescriptions ("must", "ensure", "make sure", "has to") and partial counts ("15 of
+  16", "the other 19 tests") now void only their own clause. "All 16 of 16 tests pass", "All
+  tests pass, as they must", "The other tests pass too" and `Result: "all tests pass"` are
+  claims again.
+- Benchmark: the judge input builder scrubs trial paths and arm names and no longer marks hook
+  messages. bench/README discloses pt1's blinding leaks, rubric change and corrected numbers.
+
 ### Changed
 
 - The action's `version` input installs that release from its git tag instead of PyPI.
