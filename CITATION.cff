@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use ruleproof, please cite it as below."
+title: ruleproof
+abstract: >-
+  Check whether a coding agent followed your AGENTS.md: deterministic checks over the git
+  diff and the session transcript.
+type: software
+authors:
+  - alias: h-a-forster
+repository-code: "https://github.com/h-a-forster/ruleproof"
+license: MIT
+version: 0.1.0
+date-released: 2026-10-09
