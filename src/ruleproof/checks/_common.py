@@ -648,7 +648,7 @@ def simple_commands(command: str, powershell: bool = False) -> list[list[str]]:
     return out
 
 
-def _candidates(words: list[str]) -> Iterable[list[str]]:
+def candidates(words: list[str]) -> Iterable[list[str]]:
     """``words`` and what remains after each runner prefix (``uv run``, ``npx``, ``env X=1``)."""
     pos = 0
     while pos < len(words):
@@ -796,9 +796,9 @@ def exit_belongs_to(command: str, powershell: bool, hit: Callable[[list[str]], b
 
 
 def _invocations(words: list[str]) -> Iterable[list[str]]:
-    """``_candidates``, plus the command with a script path kept whole (``./scripts/test.sh``,
+    """``candidates``, plus the command with a script path kept whole (``./scripts/test.sh``,
     ``.\\test.ps1``), so a pattern can name a script without matching the ``test`` builtin."""
-    yield from _candidates(words)
+    yield from candidates(words)
     head = next((k for k, w in enumerate(words) if not _ASSIGNMENT.match(w)), None)
     if head is not None and re.search(r"[\\/]", words[head]):
         yield [words[head].replace("\\", "/"), *words[head + 1 :]]
@@ -886,7 +886,7 @@ def shell_writes(command: str, powershell: bool = False) -> list[str | None]:
             if target.lower() not in _NULL_TARGETS and not target.startswith("$"):
                 out.append(_after_cd(target, _cwd_at([c for c in moves if c.start() < m.start()])))
     for words in simple_commands(command, powershell):
-        for cand in _candidates(words):
+        for cand in candidates(words):
             prog, args = cand[0].lower(), cand[1:]
             line = " ".join(cand)
             if prog == "tee":

@@ -39,8 +39,9 @@ All notable changes to this project are documented here. The format follows
   claims again.
 - Benchmark: the judge input builder scrubs trial paths and arm names and no longer marks hook
   messages. bench/README discloses pt1's blinding leaks, rubric change and corrected numbers.
-- `claims`: `python -m unittest discover -s tests -t .` is a full run (`-t` selects tests only
-  in jest and vitest; `-s`, `-t` and `-p` values are not named test files). Most full-suite
+- `claims`: `python -m unittest discover -s tests -t .` is a full run (`-t` is the top-level
+  directory there and the timeout in mocha, a test filter elsewhere; `-s`, `-t` and `-p` values
+  are not named test files). Most full-suite
   claims backed by `unittest discover` were wrongly `unverified`.
 - `claims`: a test run after an unpopped `git stash` (run to show a new test fails without the
   change) is not evidence; a command line that runs the tool before and after the stash is
@@ -55,6 +56,11 @@ All notable changes to this project are documented here. The format follows
   that directory, so scratch files outside the repo no longer count as edits; `patch
   --version` and `git apply --check` are not writes; `( ) { } ; | & < >` inside a quoted word
   (`sed -i "s/(a)/b/" f.py`, `echo "a>b"`) no longer split the command or make a redirect.
+- `claims`: a project's own test command (`test_commands`) that runs `unittest` or mocha behind
+  a runner prefix or coverage wrapper (`uv run python -m unittest discover -t .`, `coverage run
+  -m unittest discover -t .`, `npx nyc mocha -t 5000`) no longer reads `-t` as a test filter;
+  `-p test_*.py` is a discover pattern, and `coverage run -m unittest tests.test_app` runs named
+  test modules. Built-in test runs already started at the tool.
 - `claims`: `-t` behind a script runner (`npm test -- -t parser`, `yarn test -t parser`) is a
   name filter again, so it does not back a full-suite claim; it is not one in `unittest` or
   mocha. A hedge before "and" ("docs must be updated later and all tests pass", "the parser is

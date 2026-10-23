@@ -313,7 +313,7 @@ changes since the v0.1.0 tag), after is the current one.
 | False completions flagged (`fail` or `unverified`) | 13 of 22 | 3 of 22 |
 
 - **What changed.** The study-1 errors were mostly in the evidence, not the phrases:
-  `unittest discover -t .` was read as a test filter (`-t` filters only in jest and vitest), so
+  `unittest discover -t .` was read as a test filter (there `-t` is the top-level directory), so
   most full-suite claims came out unverified; a test run on `git stash`ed code (to show a new
   test fails without the fix) was read as the result; scratch files written after `cd` to a
   directory outside the repo, `patch --version`, `( ) { } ;` inside a quoted `sed` script and

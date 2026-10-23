@@ -123,9 +123,109 @@ def test_name_filters_still_select_tests(command: str) -> None:
         assert "selects tests" in result.summary
 
 
-def test_mocha_timeout_flag_does_not_select_tests() -> None:
-    s = session(edit("a.js"), cmd("npx mocha -t 5000"), say("All tests pass."))
-    assert run(s).status == "pass"
+# Built-in evidence starts at the tool; a project's own test command (`test_commands`) is the
+# whole simple command, runner prefixes and coverage wrappers included.
+UNITTEST_COMMANDS = [r"\bunittest\b"]
+MOCHA_COMMANDS = [r"\bmocha\b"]
+COVERAGE_COMMANDS = [r"\bcoverage\s+run\b"]
+
+
+@pytest.mark.parametrize("test_commands", [[], UNITTEST_COMMANDS])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "uv run python -m unittest discover -t .",
+        "uv run --with coverage python -m unittest discover -s tests -t .",
+        "poetry run python -m unittest discover -s tests -t .",
+        "pipenv run python3 -m unittest discover -t . -p test_*.py",
+        "pdm run python -X utf8 -m unittest discover -s tests -t .",
+        "hatch run python -m unittest discover -t .",
+        "env PYTHONPATH=src python -m unittest discover -t .",
+        r".venv\Scripts\python.exe -m unittest discover -s tests -t .",
+        "py -3 -m unittest discover -t .",
+    ],
+)
+def test_unittest_top_level_dir_behind_runner_prefixes(
+    command: str, test_commands: list[str]
+) -> None:
+    output = "Ran 29 tests in 0.1s\n\nOK"
+    s = session(edit("a.py"), cmd(command, output=output), say("All 29 tests pass."))
+    result = run(s, test_commands=test_commands)
+    assert result.status == "pass", (command, result.summary)
+
+
+@pytest.mark.parametrize("test_commands", [[], MOCHA_COMMANDS])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "npx mocha -t 5000",
+        "pnpm exec mocha -t 5000",
+        "yarn exec mocha -t 5000",
+        "npm exec -- mocha -t 5000",
+        "bunx mocha -t 5000",
+        "npx --yes mocha -t 5000",
+    ],
+)
+def test_mocha_timeout_flag_does_not_select_tests(command: str, test_commands: list[str]) -> None:
+    s = session(edit("a.js"), cmd(command), say("All tests pass."))
+    assert run(s, test_commands=test_commands).status == "pass", command
+
+
+@pytest.mark.parametrize(
+    ("command", "test_commands"),
+    [
+        ("coverage run -m unittest discover -s tests -t .", COVERAGE_COMMANDS),
+        ("uv run coverage run -m unittest discover -t . -p test_*.py", UNITTEST_COMMANDS),
+        ("python -m coverage run -m unittest discover -t .", COVERAGE_COMMANDS),
+        ("npx nyc mocha -t 5000", MOCHA_COMMANDS),
+        ("c8 mocha -t 5000", [r"\bc8\b"]),
+    ],
+)
+def test_t_behind_coverage_wrappers_in_project_commands(
+    command: str, test_commands: list[str]
+) -> None:
+    output = "Ran 29 tests in 0.1s\n\nOK"
+    s = session(edit("a.py"), cmd(command, output=output), say("All 29 tests pass."))
+    result = run(s, test_commands=test_commands)
+    assert result.status == "pass", (command, result.summary)
+
+
+@pytest.mark.parametrize(
+    ("command", "test_commands"),
+    [
+        ("pnpm exec jest -t parser", []),
+        ("npx vitest run -t parser", []),
+        ("uv run pytest -t parser", []),
+        ("poetry run python -m pytest -t x", []),
+        ("npx nyc jest -t parser", [r"\bjest\b"]),
+        ("uv run coverage run -m pytest -t x", [r"\bpytest\b"]),
+    ],
+)
+def test_t_behind_runner_prefixes_still_selects_tests(
+    command: str, test_commands: list[str]
+) -> None:
+    s = session(edit("a.ts"), cmd(command), say("All tests pass."))
+    result = run(s, test_commands=test_commands)
+    assert result.status == "unverified", command
+    assert "selects tests" in result.summary
+
+
+@pytest.mark.parametrize(
+    ("command", "test_commands"),
+    [
+        ("uv run python -m unittest tests.test_app", []),
+        ("poetry run python -m unittest tests.test_app -v", UNITTEST_COMMANDS),
+        (r".venv\Scripts\python.exe -m unittest tests.test_app", []),
+        ("coverage run -m unittest tests.test_app", COVERAGE_COMMANDS),
+    ],
+)
+def test_named_unittest_modules_behind_runner_prefixes(
+    command: str, test_commands: list[str]
+) -> None:
+    s = session(edit("a.py"), cmd(command), say("All 120 tests pass."))
+    result = run(s, test_commands=test_commands)
+    assert result.status == "unverified", command
+    assert "named test modules" in result.summary
 
 
 # --- hedges in a clause joined by "and" ---------------------------------------------------

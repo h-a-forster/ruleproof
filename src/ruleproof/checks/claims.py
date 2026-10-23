@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from ruleproof.checks import Param, register
 from ruleproof.checks._common import (
+    candidates,
     clip,
     command_matches,
     command_outcome,
@@ -524,12 +525,32 @@ _SELECT_FLAGS = frozenset(
     ["-k", "--lf", "--last-failed", "--deselect", "--testNamePattern", "-run", "--grep"]
 )
 # `-t` filters by name in jest and vitest, also behind a script runner (`npm test -- -t x`);
-# in `unittest discover` it is the top-level directory and in mocha the timeout.
+# in `unittest discover` it is the top-level directory and in mocha the timeout, also behind
+# runner prefixes (`uv run python -m unittest`, `pnpm exec mocha`).
 _NON_NAME_T_TOOLS = frozenset(["unittest", "mocha", "_mocha"])
+_COVERAGE_WRAPPERS = frozenset(["nyc", "c8"])
 # `unittest discover` options whose values are directories or file patterns, not selections.
 _DISCOVER_OPTIONS = frozenset(
     ["-s", "--start-directory", "-t", "--top-level-directory", "-p", "--pattern"]
 )
+
+
+def _t_tool(words: list[str]) -> list[str] | None:
+    """The words from a tool in which ``-t`` is not a name filter (``unittest``, ``mocha``) on,
+    or None. Built-in evidence already starts at the tool; a project's own test command
+    (``test_commands``) is the whole simple command, so runner prefixes (``uv run python -m
+    unittest``, ``pnpm exec mocha``) and coverage wrappers (``coverage run -m unittest``,
+    ``nyc mocha``) are skipped here."""
+    for cand in candidates(words):
+        if _program(cand[0]) in _NON_NAME_T_TOOLS:
+            return cand
+    for i in range(1, len(words)):
+        before = words[i - 1]
+        if _program(words[i]) in _NON_NAME_T_TOOLS and (
+            before == "-m" or _program(before) in _COVERAGE_WRAPPERS
+        ):
+            return words[i:]
+    return None
 
 
 def _subset(own: list[list[str]], output: str, sentence: str) -> str | None:
@@ -548,15 +569,17 @@ def _subset(own: list[list[str]], output: str, sentence: str) -> str | None:
         return None
     for words in own:
         args = words[1:]
-        program = _program(words[0])
-        names_t = "-t" in args and not _NON_NAME_T_TOOLS.intersection(map(_program, words[:3]))
+        inner = _t_tool(words)
+        names_t = "-t" in args and inner is None
         if _SELECT_FLAGS.intersection(args) or names_t:
             return "it selects tests"
         tool = " ".join(words[:2]).lower()
-        if program == "unittest":
+        unittest = inner if inner is not None and _program(inner[0]) == "unittest" else None
+        if unittest is not None:
+            args = unittest[1:]
             args = [a for i, a in enumerate(args) if i == 0 or args[i - 1] not in _DISCOVER_OPTIONS]
         operands = [a for a in args if not a.startswith("-")]
-        if words[0].lower() in ("unittest",) and operands and "discover" not in operands:
+        if unittest is not None and operands and "discover" not in operands:
             return "it runs named test modules"
         if any("::" in a or re.search(r"\.(?:py|[jt]sx?|rb)$", a) for a in operands):
             return "it runs named test files"
