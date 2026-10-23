@@ -162,15 +162,16 @@ def relpath_in_repo(path: str, repo: Path | str | None, cwd: str | None = None) 
     """
     if repo is None:
         return normalize(path) if not _looks_absolute(path) else None
-    repo_s = str(repo)
+    # A transcript whose home directory was redacted to `~` has a `~` working directory too.
+    repo_s = _home(str(repo)) or str(repo)
+    cwd = (_home(cwd) or cwd) if cwd else cwd
     windows = _is_windows_abs(repo_s) or _is_windows_abs(path) or os.name == "nt"
     raw = path.strip().strip('"').strip("'")
     if raw.startswith("~"):
-        expanded = _expand_home(raw)
+        expanded = _home(raw)
         if expanded is None:
             return None
-        # `~\x` is a Windows path even when read on POSIX.
-        raw = expanded.replace("\\", "/") if raw.startswith("~\\") else expanded
+        raw = expanded
     if windows:
         raw = _msys_to_windows(raw)
         repo_s = _msys_to_windows(repo_s.replace("\\", "/"))
@@ -195,6 +196,17 @@ def relpath_in_repo(path: str, repo: Path | str | None, cwd: str | None = None) 
     if full.startswith(root + "/"):
         return full[len(root) + 1 :]
     return None
+
+
+def _home(path: str) -> str | None:
+    """``path`` with a leading ``~`` expanded (see ``_expand_home``); ``~\\x`` is a Windows
+    path even when read on POSIX."""
+    if not path.startswith("~"):
+        return path
+    expanded = _expand_home(path)
+    if expanded is None:
+        return None
+    return expanded.replace("\\", "/") if path.startswith("~\\") else expanded
 
 
 def _expand_home(path: str) -> str | None:

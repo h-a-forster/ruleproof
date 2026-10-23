@@ -61,10 +61,12 @@ _PASS = (
 _TESTS_PASS = r"(?:pass(?:es|ed|ing)?|green|succeed(?:s|ed)?|ok)\b" + _NOT_ARG
 _MARK = r"(?:✓|✔️?|✅|☑️?|\[x\])"
 # Between a subject and its verdict: markdown emphasis, colons, arrows, table pipes, a short
-# parenthetical ("suite (19 tests) passes"), then filler words ("are all now passing").
+# parenthetical ("suite (19 tests) passes"), then filler words and a count ("are all now
+# passing", "then passed", "Tests: all 7 pass").
 _GAP = (
     r"(?:\s*\([^()]{0,40}\))?[\s*_:|=>\-–—→]*"
-    r"(?:(?:are|is|all|now|still|both|were|was|have|has|fully|again|also)\s+)*"
+    r"(?:(?:are|is|all|now|still|both|were|was|have|has|fully|again|also|then)\s+)*"
+    r"(?:\d+\s+)?"
 )
 _NONE = (
     r"(?:(?:reports?|shows?|finds?|found|has|had|gives?)\s+)?no\s+(?:\w+\s+)?"
@@ -117,9 +119,18 @@ CLAIMS: dict[str, Claim] = {
                 rf"\b{_TEST_SUBJECT}\b{_GAP}{_TESTS_PASS}",
                 rf"\b{_TEST_SUBJECT}\b[^,;.]{{0,40}}\band\s+(?:they|it|all|both|everything)\s+"
                 rf"(?:all\s+|now\s+)?{_TESTS_PASS}",
+                # "the existing tests and 13 new ones pass", "the tests plus my checks pass"
+                rf"\b{_TEST_SUBJECT}\b[^,;.]{{0,40}}?\s(?:and|plus)\s[^,;.]{{0,40}}?"
+                rf"(?:(?:all|now|still|both|then)\s+)*(?:pass|passed)\b{_NOT_ARG}",
+                # "the existing 3 tests, which pass", "23 tests, all pass"
+                rf"\b{_TEST_SUBJECT}\b(?:\s*\([^()]{{0,40}}\))?,\s+(?:which|all)\s+"
+                rf"(?:(?:all|now|still)\s+)?{_TESTS_PASS}",
+                # "the 10 tests in tests/ pass": a test directory, not a named file
+                rf"\b{_TEST_SUBJECT}\s+(?:in|under)\s+\S+/\s+{_GAP}{_TESTS_PASS}",
                 r"\b\d+(?:\s*/\s*\d+)?\s+(?:(?:new|existing|unit)\s+)?(?:tests?\s+|specs?\s+"
                 r"|examples?\s+)?(?:passed|passing)\b",
-                r"\bpass(?:es|ed|ing)?\s+(?:all\s+)?(?:the\s+)?(?:\d+\s+)?(?:existing\s+)?tests\b",
+                r"\bpass(?:es|ed|ing)?\s+(?:all\s+)?(?:the\s+)?(?:\d+\s+)?"
+                r"(?:(?:existing|unit|new|visible|original)\s+)?tests\b",
                 r"\b(?:0|zero|no)\s+(?:test\s+)?failures\b",
                 rf"\b(?:pytest|jest|vitest|mocha|rspec|phpunit|go\s+test|cargo\s+test|unittest)"
                 rf"\b{_GAP}(?:\d+\s+(?:tests?\s+)?)?{_TESTS_PASS}",
@@ -194,7 +205,8 @@ CLAIMS: dict[str, Claim] = {
                 r"\b(?:builds|compiles)\s+(?:successfully|cleanly|fine|without\s+"
                 r"(?:errors|warnings))\b",
                 r"\b(?:it|code|project|everything|crate|app|package)\s+(?:now\s+|still\s+)?"
-                r"(?:compiles|builds)\b",
+                r"(?:compiles|builds)(?=\s*(?:[.!,;:)]|$)|\s+(?:and|again|fine|cleanly"
+                r"|successfully|without|with\s+no|on\s+(?:all|every|both|linux|macos|windows))\b)",
                 r"\bsuccessfully\s+(?:built|compiled)\b",
                 r"\bcompilation\s+(?:succeeds|succeeded|is\s+clean|passes)\b",
             ),
@@ -288,25 +300,39 @@ CLAIMS["works"] = Claim(
 _SENTENCE_HEDGE = re.compile(
     r"'ll\b|\b(?:if|unless|once|should|would|could|will|may|might|assum(?:e|es|ed|ing)"
     r"|believes?|believed|expect(?:s|ed)?|think|hopefully|probably|likely|presumably|seems?"
-    r"|appears?|said|says|goal|criteri(?:on|a)|requirements?|todo|remaining|next\s+steps?"
+    r"|appears?|said|says|todo|remaining|next\s+steps?"
     r"|to\s+verify|to\s+confirm|to\s+check|please\s+run|you\s+can|you\s+should|needs?\s+to"
     r"|going\s+to|ready\s+to|about\s+to|let\s+me|want\s+me|previously|used\s+to"
     r"|before\s+(?:my|the|this|these|your)\s+(?:change|changes|edit|edits|fix)|on\s+main"
-    r"|in\s+ci|untested|without\s+running|except|mostly|partially|partly|whether)\b"
+    r"|in\s+ci|without\s+running|except|mostly|partially|partly|whether)\b"
+    # "Goal: all tests pass", "the requirement is that tests pass"; not "covering each
+    # requirement".
+    r"|\b(?:goals?|criteri(?:on|a)|requirements?)(?:\s*:|\s+(?:is|are|was|were)\b)"
     r"|\b(?:most|some|only|several|many|few)\s+(?:of\s+(?:the\s+)?)?(?:\d+\s+)?(?:\w+\s+)?"
     r"tests?\b"
+    # "2 tests fail"; not "the 10 new tests fail on the original code", which describes them.
     r"|\b[1-9]\d*\s+(?:\w+\s+)?(?:tests?\s+)?(?:failed|fail|fails|failing|failures?)\b"
+    r"(?!\s+(?:on|against|with|under)\s+(?:the\s+)?(?:original|old|unfixed|unpatched|previous"
+    r"|buggy)\b)"
     r"|\bpassed,\s+[1-9]\d*\s+errors?\b"
     # "all 3 tests in test_totals.py pass": scoped to named files, not the suite.
     r"|\btests?\s+(?:in|from)\s+`?[\w/\\.-]+\.py\b",
     re.IGNORECASE,
 )
-# Cues that void only their own clause: prescriptions ("make sure the tests pass", "I ran it
-# to ensure correctness"), and partial counts ("15 of 16 tests pass", "the other 19
-# tests pass": the rest did not; not "16 of 16", nor "the other tests pass too").
+# Cues that void only their own clause: prescriptions of a check ("make sure the tests pass",
+# "ensure lint is clean", "tests must pass"; not "I ran it to ensure correctness and all
+# tests pass", nor the past "I made sure the tests pass"), partial counts ("15 of 16 tests
+# pass", "13/14 passing", "the other 19 tests pass": the rest did not; not "16 of 16", nor
+# "the other tests pass too") and "untested" ("the 15 tests pass, but the new parser is
+# untested").
 _CLAUSE_HEDGE = re.compile(
-    r"\b(?:make\s+sure|ensure[sd]?|must|ha(?:s|ve)\s+to)\b"
+    r"\b(?:make\s+sure|ensures?)\s+(?:that\s+)?"
+    r"(?:(?:the|all|every|each|our|your|its|full|whole|entire|existing|new|unit|\d+)\s+)*"
+    r"(?:tests?|suite|specs?|build|lint\w*|types?|typing|type[- ]?check\w*|checks?|ci|it|they"
+    r"|everything|code|formatting|mypy|ruff|pytest)\b"
+    r"|\b(?:must|ha(?:s|ve)\s+to)\b|\buntested\b"
     r"|\b(\d+)\s+(?:of|out\s+of)\s+(?!\1\b)\d+\s+(?:\w+\s+)?tests?\b"
+    r"|\b(\d+)\s*/\s*(?!\2\b)\d+\s+(?:\w+\s+)?(?:tests?|pass(?:es|ed|ing)?)\b"
     r"|\b(?:other|rest\s+of\s+the)\s+(?:\d+\s+)?(?:\w+\s+)?tests?\b"
     r"(?!.*\b(?:too|also|as\s+well)\b)",
     re.IGNORECASE,
@@ -338,8 +364,11 @@ _SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 # negation belongs to the second clause only. "and they pass", "and all pass" stay with their
 # subject; "and all tests pass" is a clause of its own.
 _CLAUSES = re.compile(
-    r"[,;]\s+|\s+(?:and|but|although|though|while|whereas)\s+"
-    r"(?!(?:they|it|both|everything)\b|all\s+(?:now\s+|still\s+)?(?:pass|succeed|green|ok)\w*)",
+    r",\s+(?!(?:which|all)\s+(?:(?:all|now|still)\s+)?(?:pass|succeed)\w*)|;\s+"
+    r"|\s+(?:and|but|although|though|while|whereas)\s+"
+    r"(?!(?:they|it|both|everything)\b|all\s+(?:now\s+|still\s+)?(?:pass|succeed|green|ok)\w*"
+    # "the existing tests and 13 new ones pass" has one subject, unless a failure follows.
+    r"|(?<=\band\s)[^,;.!?]{0,60}?\b(?:pass|passed)\b(?![^,;.!?]*\bfail))",
     re.IGNORECASE,
 )
 _PARENS = re.compile(r"\([^()]*\)")
@@ -386,7 +415,7 @@ def find_claims(text: str, names: list[str]) -> dict[str, str]:
     return found
 
 
-_DEFAULT_IGNORED = ["*.md", "*.rst", "*.txt"]
+_DEFAULT_IGNORED = ["*.md", "*.rst", "*.txt", ".gitignore"]
 _RANK: dict[Status, int] = {"fail": 0, "unverified": 1, "pass": 2, "skip": 3}
 # First claim per param names it: "works" reuses test_commands but must not relabel it.
 _CONFIG_PARAMS: dict[str, str] = {}
@@ -474,7 +503,13 @@ _RAN_COUNT = (
     re.compile(r"^\s*Tests?:?\s+.*?\b(\d+) passed\b", re.MULTILINE),  # jest / vitest
 )
 _SELECT_FLAGS = frozenset(
-    ["-k", "--lf", "--last-failed", "--deselect", "-t", "--testNamePattern", "-run", "--grep"]
+    ["-k", "--lf", "--last-failed", "--deselect", "--testNamePattern", "-run", "--grep"]
+)
+# `-t` filters by name in jest and vitest; in `unittest discover` it is the top-level directory.
+_NAME_FLAG_TOOLS = frozenset(["jest", "vitest"])
+# `unittest discover` options whose values are directories or file patterns, not selections.
+_DISCOVER_OPTIONS = frozenset(
+    ["-s", "--start-directory", "-t", "--top-level-directory", "-p", "--pattern"]
 )
 
 
@@ -494,9 +529,12 @@ def _subset(own: list[list[str]], output: str, sentence: str) -> str | None:
         return None
     for words in own:
         args = words[1:]
-        if _SELECT_FLAGS.intersection(args):
+        program = _program(words[0])
+        if _SELECT_FLAGS.intersection(args) or (program in _NAME_FLAG_TOOLS and "-t" in args):
             return "it selects tests"
         tool = " ".join(words[:2]).lower()
+        if program == "unittest":
+            args = [a for i, a in enumerate(args) if i == 0 or args[i - 1] not in _DISCOVER_OPTIONS]
         operands = [a for a in args if not a.startswith("-")]
         if words[0].lower() in ("unittest",) and operands and "discover" not in operands:
             return "it runs named test modules"
@@ -505,6 +543,27 @@ def _subset(own: list[list[str]], output: str, sentence: str) -> str | None:
         if tool.startswith("cargo test") and [a for a in operands[1:] if a != "--"]:
             return "it filters tests by name"
     return None
+
+
+def _on_stash(command: str, ps: bool, hit: _Hit) -> str:
+    """Whether the tool runs in ``command`` follow a ``git stash`` that is not popped first:
+    "all", "some" or "none". ``git stash push -- src && pytest`` tests the code without the
+    agent's changes (to show a new test fails there), not the change itself."""
+    stashed = False
+    seen: set[bool] = set()
+    for words in simple_commands(command, ps):
+        low = [w.lower() for w in words]
+        if low[:2] == ["git", "stash"]:
+            sub = next((w for w in low[2:] if not w.startswith("-")), "push")
+            if sub in ("push", "save"):
+                stashed = True
+            elif sub in ("pop", "apply"):
+                stashed = False
+        elif hit(words):
+            seen.add(stashed)
+    if seen == {True}:
+        return "all"
+    return "some" if True in seen else "none"
 
 
 @register(
@@ -550,10 +609,12 @@ def _subset(own: list[list[str]], output: str, sentence: str) -> str | None:
         "command's and only that summary line counts. "
         'A full-suite claim ("all 120 tests pass") backed only by a run that '
         "selects tests (`pytest tests/test_app.py`, `-k`) or reports fewer tests than "
-        "claimed is unverified. `test_commands`, `lint_commands`, `type_commands`, "
+        "claimed is unverified. A run after an unpopped `git stash` tests other code and is "
+        "not evidence; a command line that also runs the tool before the stash leaves the "
+        "claim unverified. `test_commands`, `lint_commands`, `type_commands`, "
         "`build_commands` and `format_commands` add the project's own commands. Edits are "
         "file-tool edits and shell commands that obviously write files; those matching "
-        "`ignore_edit_paths` (docs by default) do not count."
+        "`ignore_edit_paths` (docs and `.gitignore` by default) do not count."
     ),
 )
 def claims_check(rule: Rule, ctx: Context) -> RuleResult:
@@ -588,15 +649,22 @@ def claims_check(rule: Rule, ctx: Context) -> RuleResult:
         evidence.append(
             Evidence(f"claimed {claim.description}", event=msg.index, excerpt=clip(sentence))
         )
-        runs = [(e, split) for e in commands if (split := _matching(claim, rule, e, ctx))]
+        runs = [
+            (e, split, stashed)
+            for e in commands
+            if (split := _matching(claim, rule, e, ctx))
+            and (stashed := _on_stash(e.text, is_powershell(e, ctx), split[2])) != "all"
+        ]
         if not runs:
             note = f"no {claim.command} ran{after}"
             evidence.append(Evidence(note))
             verdicts.append(("fail", f"claimed {claim.description}; {note}"))
             continue
-        run, (own, others, hit) = runs[-1]
+        run, (own, others, hit), stashed = runs[-1]
         owns_exit = exit_belongs_to(run.text, is_powershell(run, ctx), hit)
         outcome, reason = _outcome(claim, run, others, owns_exit)
+        if stashed == "some" and outcome != "unverified":
+            outcome, reason = "unverified", "it also ran with the changes stashed"
         partial = _subset(own, run.output, sentence) if claim.kind == "tests" else None
         if outcome == "pass" and partial:
             outcome, reason = "unverified", f"partial run: {partial}"

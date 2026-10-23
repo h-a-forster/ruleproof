@@ -342,6 +342,8 @@ class _Masker:
                     continue
                 if any(ch.isspace() for ch in s[i + 1 : j]):
                     self.blank(i + 1, j)
+                else:
+                    self.literal(range(i + 1, j))
                 i = j + 1
                 continue
             if c == '"':
@@ -410,7 +412,16 @@ class _Masker:
             for k in literal:
                 if s[k] != "\n":
                     self.out[k] = " "
+        else:
+            self.literal(literal)
         return i + 1
+
+    def literal(self, positions: Iterable[int]) -> None:
+        """Neutralise operators inside a quoted word (``sed -i "s/(a)/b/"``, ``echo "a>b"``):
+        they are text, not separators or redirects."""
+        for k in positions:
+            if self.s[k] in _QUOTED_OPERATORS:
+                self.out[k] = "_"
 
     def heredocs(self, i: int, delimiters: list[str]) -> int:
         s, n = self.s, len(self.s)
@@ -468,6 +479,7 @@ _SCRIPT_E = re.compile(
     r"(?:\s+-\w+)*?\s+-[ce]\s+"
 )
 _QUOTE_CHARS = re.compile(r"[\"']")
+_QUOTED_OPERATORS = frozenset(";&|(){}<>")
 _MAX_NESTING = 4
 
 
@@ -800,6 +812,38 @@ _FORMAT_WRITES = re.compile(
     r"^(?:ruff format|black|isort|cargo fmt|rustfmt|gofmt -w|goimports -w|shfmt -w"
     r"|dotnet format|mix format|deno fmt)\b"
 )
+# `cd dir && cat > file`: the directory a later relative redirect target is in. A quoted
+# directory with spaces is masked, and leaves the group empty.
+_CD = re.compile(
+    r"(?:^|[;&|\n]\s*)(?:cd|pushd|set-location|sl)(?:[ \t]+(?:-\w+[ \t]+)?([^\s;&|<>()]*))?"
+    r"(?=\s*(?:$|[;&|\n)]))",
+    re.IGNORECASE,
+)
+
+
+def _after_cd(target: str, dirs: list[str]) -> str | None:
+    """``target`` of a redirect after the ``cd`` commands ``dirs`` that precede it; None when
+    one of them changed to a directory that cannot be read."""
+    if _looks_absolute(target):
+        return target
+    for d in reversed(dirs):
+        if not d or d == "-":
+            return None
+        target = f"{d.rstrip('/')}/{target}"
+        if _looks_absolute(d):
+            break
+    return target
+
+
+def _looks_absolute(path: str) -> bool:
+    return bool(re.match(r"^(?:[/\\~]|[A-Za-z]:[\\/])", path))
+
+
+# `patch --version`, `git apply --check`: they print, and change no file.
+_NO_WRITE_FLAGS = frozenset(
+    ["--version", "--help", "--check", "--stat", "--numstat", "--summary", "--dry-run"]
+    + ["--show-current-patch"]
+)
 
 
 def shell_writes(command: str, powershell: bool = False) -> list[str | None]:
@@ -816,10 +860,11 @@ def shell_writes(command: str, powershell: bool = False) -> list[str | None]:
         if view.raw:
             continue
         text = _QUOTE_CHARS.sub("", view.masked)
+        dirs = [(m.start(), m.group(1)) for m in _CD.finditer(text)]
         for m in _REDIRECT.finditer(text):
             target = m.group(1)
             if target.lower() not in _NULL_TARGETS and not target.startswith("$"):
-                out.append(target)
+                out.append(_after_cd(target, [d for pos, d in dirs if pos < m.start()]))
     for words in simple_commands(command, powershell):
         for cand in _candidates(words):
             prog, args = cand[0].lower(), cand[1:]
@@ -839,7 +884,8 @@ def shell_writes(command: str, powershell: bool = False) -> list[str | None]:
                 files = operands if script_flag else operands[1:]
                 out.extend([f for f in files if f.strip()] or [None])
             elif re.match(r"^(?:git (?:apply|am|restore|checkout --)|patch)\b", line):
-                out.append(None)
+                if not _NO_WRITE_FLAGS.intersection(args):
+                    out.append(None)
             elif "--check" in args or "--diff" in args:
                 continue
             elif "--fix" in args or "--write" in args or _FORMAT_WRITES.match(line):
