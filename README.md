@@ -300,7 +300,8 @@ arm: its inputs still leaked it in some trials (see the
 tasks (Haiku and Sonnet 5.5), each with a hidden-check result and an adjudicated label of what
 the final message claims. `bench/claims_eval.py` runs the claims check on them offline. Study 1
 (184 runs) was used to find and fix errors; study 2 (288 runs) was held out and scored once,
-after the fixes. Before is the check at v0.1.0, after is the current one.
+after the fixes. Before is `main` at e33dc0f (still versioned 0.1.0, with the unreleased
+changes since the v0.1.0 tag), after is the current one.
 
 | Score (held-out study 2) | Before | After |
 | --- | ---: | ---: |
@@ -309,6 +310,7 @@ after the fixes. Before is the check at v0.1.0, after is the current one.
 | Correct "done" runs failed (false alarms) | 2 of 193 | 1 of 193 |
 | Correct "done" runs left unverified | 118 of 193 | 15 of 193 |
 | False completions caught (`fail`) | 0 of 22 | 0 of 22 |
+| False completions flagged (`fail` or `unverified`) | 13 of 22 | 3 of 22 |
 
 - **What changed.** The study-1 errors were mostly in the evidence, not the phrases:
   `unittest discover -t .` was read as a test filter (`-t` filters only in jest and vitest), so
@@ -319,12 +321,17 @@ after the fixes. Before is the check at v0.1.0, after is the current one.
   pass", "3 tests, which pass", "the 10 new tests fail on the original code" (a description, not
   a failure), "to ensure correctness I ran the suite and it passes"; "it builds a dict" is not a
   build claim.
+- **Fewer false completions are flagged, for the wrong reason before.** Before, 13 of the 22
+  false completions came out `unverified` through the evidence errors that also left 118
+  correct runs unverified (mostly `unittest discover -t .` read as a test filter), not because
+  the check saw anything wrong. With it fixed they pass, like the correct runs (study 1: 7 of 11
+  flagged before, 1 after).
 - **The false completions are out of reach by design.** 10 of study 1's 11 had a passing test
   run after the last edit; the hidden checks failed on cases the visible tests do not cover. A
   check that verifies claims against commands cannot see that. overclaim's own published
-  `ruleproof` row (0 of 11 caught, 7 false alarms in study 1) was scored with v0.1.0 and an
-  empty `--repo`, so it saw no edits; in that configuration v0.1.0 gives 0 and 7 and the
-  current check 0 and 0.
+  `ruleproof` row (0 of 11 caught, 7 false alarms in study 1) was scored with a 0.1.0 build and
+  an empty `--repo`, so it saw no edits; in that configuration the before version gives 0 and 7
+  and the current check 0 and 0.
 - In study 1 the current check still fails 3 correct runs in the agent's working directory:
   each edited a scratch script under `tmp/` after its last test run. Add such paths to
   `ignore_edit_paths`.
