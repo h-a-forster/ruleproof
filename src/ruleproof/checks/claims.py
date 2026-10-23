@@ -366,11 +366,14 @@ _SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 _CLAUSES = re.compile(
     r",\s+(?!(?:which|all)\s+(?:(?:all|now|still)\s+)?(?:pass|succeed)\w*)|;\s+"
     r"|\s+(?:and|but|although|though|while|whereas)\s+"
-    r"(?!(?:they|it|both|everything)\b|all\s+(?:now\s+|still\s+)?(?:pass|succeed|green|ok)\w*"
-    # "the existing tests and 13 new ones pass" has one subject, unless a failure follows.
-    r"|(?<=\band\s)[^,;.!?]{0,60}?\b(?:pass|passed)\b(?![^,;.!?]*\bfail))",
+    r"(?!(?:they|it|both|everything)\b|all\s+(?:now\s+|still\s+)?(?:pass|succeed|green|ok)\w*)",
     re.IGNORECASE,
 )
+# "the existing tests and 13 new ones pass" has one subject: a passing "and" clause joins the
+# clause before it when that one ends in tests, unless a failure follows. In "the parser is
+# untested and all tests pass" the clauses stay apart.
+_JOINS_SUBJECT = re.compile(r"[^,;.!?]{0,60}?\b(?:pass|passed)\b(?![^,;.!?]*\bfail)", re.I)
+_ENDS_IN_TESTS = re.compile(r"\b(?:tests?|specs?|checks|suites?)(?:\s*\([^()]*\))?\s*$", re.I)
 _PARENS = re.compile(r"\([^()]*\)")
 
 
@@ -390,7 +393,22 @@ def sentences(text: str) -> list[str]:
 def clauses(sentence: str) -> list[str]:
     """Clauses of a sentence; commas inside parentheses do not split."""
     protected = _PARENS.sub(lambda m: m.group().replace(",", "\0").replace(";", "\1"), sentence)
-    return [c.replace("\0", ",").replace("\1", ";") for c in _CLAUSES.split(protected)]
+    parts: list[str] = []
+    start, sep = 0, ""
+    for m in [*_CLAUSES.finditer(protected), None]:
+        part = protected[start : m.start() if m else len(protected)]
+        if (
+            parts
+            and sep.strip().lower() == "and"
+            and _JOINS_SUBJECT.match(part)
+            and _ENDS_IN_TESTS.search(parts[-1])
+        ):
+            parts[-1] += sep + part
+        else:
+            parts.append(part)
+        if m:
+            sep, start = m.group(), m.end()
+    return [c.replace("\0", ",").replace("\1", ";") for c in parts]
 
 
 def is_assertion(sentence: str) -> bool:
@@ -505,8 +523,9 @@ _RAN_COUNT = (
 _SELECT_FLAGS = frozenset(
     ["-k", "--lf", "--last-failed", "--deselect", "--testNamePattern", "-run", "--grep"]
 )
-# `-t` filters by name in jest and vitest; in `unittest discover` it is the top-level directory.
-_NAME_FLAG_TOOLS = frozenset(["jest", "vitest"])
+# `-t` filters by name in jest and vitest, also behind a script runner (`npm test -- -t x`);
+# in `unittest discover` it is the top-level directory and in mocha the timeout.
+_NON_NAME_T_TOOLS = frozenset(["unittest", "mocha", "_mocha"])
 # `unittest discover` options whose values are directories or file patterns, not selections.
 _DISCOVER_OPTIONS = frozenset(
     ["-s", "--start-directory", "-t", "--top-level-directory", "-p", "--pattern"]
@@ -530,7 +549,8 @@ def _subset(own: list[list[str]], output: str, sentence: str) -> str | None:
     for words in own:
         args = words[1:]
         program = _program(words[0])
-        if _SELECT_FLAGS.intersection(args) or (program in _NAME_FLAG_TOOLS and "-t" in args):
+        names_t = "-t" in args and not _NON_NAME_T_TOOLS.intersection(map(_program, words[:3]))
+        if _SELECT_FLAGS.intersection(args) or names_t:
             return "it selects tests"
         tool = " ".join(words[:2]).lower()
         if program == "unittest":
@@ -545,6 +565,25 @@ def _subset(own: list[list[str]], output: str, sentence: str) -> str | None:
     return None
 
 
+_STASH_SUBCOMMANDS = frozenset(
+    ["push", "save", "pop", "apply", "list", "show", "drop", "clear", "branch", "create", "store"]
+)
+
+
+def _stash_subcommand(args: list[str]) -> str:
+    """The ``git stash`` subcommand; options and pathspecs without one are an implicit push
+    (``git stash -m wip``, ``git stash -- src``)."""
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in ("-m", "--message"):
+            skip = True
+        elif a == "--" or not a.startswith("-"):
+            return a if a in _STASH_SUBCOMMANDS else "push"
+    return "push"
+
+
 def _on_stash(command: str, ps: bool, hit: _Hit) -> str:
     """Whether the tool runs in ``command`` follow a ``git stash`` that is not popped first:
     "all", "some" or "none". ``git stash push -- src && pytest`` tests the code without the
@@ -554,7 +593,7 @@ def _on_stash(command: str, ps: bool, hit: _Hit) -> str:
     for words in simple_commands(command, ps):
         low = [w.lower() for w in words]
         if low[:2] == ["git", "stash"]:
-            sub = next((w for w in low[2:] if not w.startswith("-")), "push")
+            sub = _stash_subcommand(low[2:])
             if sub in ("push", "save"):
                 stashed = True
             elif sub in ("pop", "apply"):

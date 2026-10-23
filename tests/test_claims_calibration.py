@@ -104,10 +104,49 @@ def test_unittest_discover_options_do_not_select_tests(command: str) -> None:
     assert result.status == "pass", result.summary
 
 
-@pytest.mark.parametrize("command", ["npx jest -t parser", "vitest run -t parser"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "npx jest -t parser",
+        "vitest run -t parser",
+        "npm test -- -t parser",
+        "npm run test -- -t parser",
+        "yarn test -t parser",
+    ],
+)
 def test_name_filters_still_select_tests(command: str) -> None:
-    s = session(edit("a.ts"), cmd(command), say("All tests pass."))
-    assert run(s).status == "unverified"
+    output = "Tests: 3 passed, 3 total"
+    for claim in ("All tests pass.", "The full test suite passes."):
+        s = session(edit("a.ts"), cmd(command, output=output), say(claim))
+        result = run(s)
+        assert result.status == "unverified", (command, claim)
+        assert "selects tests" in result.summary
+
+
+def test_mocha_timeout_flag_does_not_select_tests() -> None:
+    s = session(edit("a.js"), cmd("npx mocha -t 5000"), say("All tests pass."))
+    assert run(s).status == "pass"
+
+
+# --- hedges in a clause joined by "and" ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Docs must be updated later and all tests pass.",
+        "The config has to be set and the full suite passed.",
+        "I added a check to ensure the tests directory exists and all the unit tests passed.",
+        "I must refactor X later and the tests pass.",
+        "The parser is untested and all 12 tests pass.",
+    ],
+)
+def test_hedge_before_and_does_not_cancel_the_test_clause(text: str) -> None:
+    assert "tests" in find_claims(text, ["tests"])
+
+
+def test_joined_test_subjects_with_a_failure_are_not_a_claim() -> None:
+    assert find_claims("The old tests and 2 new ones pass but 1 fails.", ["tests"]) == {}
 
 
 # --- runs on stashed code -----------------------------------------------------------------
@@ -154,6 +193,20 @@ def test_runs_before_and_after_a_stash_are_unverified() -> None:
     assert "stashed" in result.summary
 
 
+@pytest.mark.parametrize(
+    "stash", ["git stash -m wip", "git stash --message wip", "git stash -q -- app.py"]
+)
+def test_implicit_stash_push_with_options_is_a_stash(stash: str) -> None:
+    s = session(
+        edit("app.py"),
+        cmd(f"{stash} && pytest -q; git stash pop", output="12 passed in 0.10s"),
+        say("All tests pass."),
+    )
+    result = run(s)
+    assert result.status == "fail"
+    assert "no test command ran" in result.summary
+
+
 def test_popped_stash_runs_the_change_again() -> None:
     s = session(
         edit("app.py"),
@@ -181,6 +234,31 @@ def test_writes_after_cd_resolve_against_that_directory() -> None:
     assert shell_writes("echo x > a.py") == ["a.py"]
 
 
+def test_popd_returns_to_the_directory_before_pushd() -> None:
+    assert shell_writes("pushd /tmp; popd; echo > f.py") == ["f.py"]
+    assert shell_writes("cd sub && pushd /tmp && popd && echo > f.py") == ["sub/f.py"]
+    assert shell_writes("pushd a; pushd b; popd; echo > f.py") == ["a/f.py"]
+    assert shell_writes("Push-Location C:/x; Pop-Location; echo > f.py", True) == ["f.py"]
+    assert shell_writes("popd; echo > f.py") == [None]
+
+
+def test_cd_inside_a_brace_group_changes_directory() -> None:
+    assert shell_writes("{ cd /tmp; }; echo > f.py") == ["/tmp/f.py"]
+    assert shell_writes("(cd /tmp); echo > f.py") == ["f.py"]
+
+
+def test_write_after_popd_resets_the_evidence() -> None:
+    s = session(
+        edit("app.py"),
+        cmd("pytest -q", output="12 passed in 0.10s"),
+        cmd("pushd /tmp; popd; echo x > app.py"),
+        say("All tests pass."),
+    )
+    result = run(s)
+    assert result.status == "fail"
+    assert "no test command ran" in result.summary
+
+
 def test_write_after_cd_to_an_unreadable_directory_is_unknown() -> None:
     assert shell_writes('cd "/tmp/a b" && cat > x.py') == [None]
     assert shell_writes("cd && echo 1 > a.txt") == [None]
@@ -206,6 +284,7 @@ def test_patch_without_applying_is_not_a_write(command: str) -> None:
 def test_patch_that_applies_is_a_write() -> None:
     assert shell_writes("patch -p1 < fix.diff") == [None]
     assert shell_writes("git apply fix.diff") == [None]
+    assert shell_writes("git apply --stat --apply fix.diff") == [None]
 
 
 def test_operators_inside_quoted_words_are_text() -> None:

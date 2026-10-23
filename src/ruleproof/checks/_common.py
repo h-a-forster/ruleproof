@@ -815,17 +815,37 @@ _FORMAT_WRITES = re.compile(
 # `cd dir && cat > file`: the directory a later relative redirect target is in. A quoted
 # directory with spaces is masked, and leaves the group empty.
 _CD = re.compile(
-    r"(?:^|[;&|\n]\s*)(?:cd|pushd|set-location|sl)(?:[ \t]+(?:-\w+[ \t]+)?([^\s;&|<>()]*))?"
-    r"(?=\s*(?:$|[;&|\n)]))",
+    r"(?:^|[;&|\n{]\s*)(?:(cd|set-location|sl)|pushd|push-location)"
+    r"(?:[ \t]+(?:-\w+[ \t]+)?([^\s;&|<>(){}]*))?(?=\s*(?:$|[;&|\n)}]))"
+    r"|(?:^|[;&|\n{]\s*)(?:popd|pop-location)(?=\s*(?:$|[;&|\n)}]))",
     re.IGNORECASE,
 )
 
 
-def _after_cd(target: str, dirs: list[str]) -> str | None:
+def _cwd_at(moves: list[re.Match[str]]) -> list[str | None] | None:
+    """The ``cd`` / ``pushd`` directories in effect after ``moves``; ``popd`` drops back to
+    before the last ``pushd``. None when a ``popd`` has no ``pushd`` to undo."""
+    dirs: list[str | None] = []
+    pushes: list[int] = []
+    for m in moves:
+        if m.group(0).strip(" \t\n;&|{").lower() in ("popd", "pop-location"):
+            if not pushes:
+                return None
+            del dirs[pushes.pop() :]
+        else:
+            if not m.group(1):
+                pushes.append(len(dirs))
+            dirs.append(m.group(2))
+    return dirs
+
+
+def _after_cd(target: str, dirs: list[str | None] | None) -> str | None:
     """``target`` of a redirect after the ``cd`` commands ``dirs`` that precede it; None when
     one of them changed to a directory that cannot be read."""
     if _looks_absolute(target):
         return target
+    if dirs is None:
+        return None
     for d in reversed(dirs):
         if not d or d == "-":
             return None
@@ -839,7 +859,7 @@ def _looks_absolute(path: str) -> bool:
     return bool(re.match(r"^(?:[/\\~]|[A-Za-z]:[\\/])", path))
 
 
-# `patch --version`, `git apply --check`: they print, and change no file.
+# `patch --version`, `git apply --check`: they print, and change no file (unless `--apply`).
 _NO_WRITE_FLAGS = frozenset(
     ["--version", "--help", "--check", "--stat", "--numstat", "--summary", "--dry-run"]
     + ["--show-current-patch"]
@@ -860,11 +880,11 @@ def shell_writes(command: str, powershell: bool = False) -> list[str | None]:
         if view.raw:
             continue
         text = _QUOTE_CHARS.sub("", view.masked)
-        dirs = [(m.start(), m.group(1)) for m in _CD.finditer(text)]
+        moves = list(_CD.finditer(text))
         for m in _REDIRECT.finditer(text):
             target = m.group(1)
             if target.lower() not in _NULL_TARGETS and not target.startswith("$"):
-                out.append(_after_cd(target, [d for pos, d in dirs if pos < m.start()]))
+                out.append(_after_cd(target, _cwd_at([c for c in moves if c.start() < m.start()])))
     for words in simple_commands(command, powershell):
         for cand in _candidates(words):
             prog, args = cand[0].lower(), cand[1:]
@@ -884,7 +904,8 @@ def shell_writes(command: str, powershell: bool = False) -> list[str | None]:
                 files = operands if script_flag else operands[1:]
                 out.extend([f for f in files if f.strip()] or [None])
             elif re.match(r"^(?:git (?:apply|am|restore|checkout --)|patch)\b", line):
-                if not _NO_WRITE_FLAGS.intersection(args):
+                # `git apply --stat --apply` prints the stat and applies the patch.
+                if "--apply" in args or not _NO_WRITE_FLAGS.intersection(args):
                     out.append(None)
             elif "--check" in args or "--diff" in args:
                 continue

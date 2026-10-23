@@ -55,6 +55,14 @@ All notable changes to this project are documented here. The format follows
   that directory, so scratch files outside the repo no longer count as edits; `patch
   --version` and `git apply --check` are not writes; `( ) { } ; | & < >` inside a quoted word
   (`sed -i "s/(a)/b/" f.py`, `echo "a>b"`) no longer split the command or make a redirect.
+- `claims`: `-t` behind a script runner (`npm test -- -t parser`, `yarn test -t parser`) is a
+  name filter again, so it does not back a full-suite claim; it is not one in `unittest` or
+  mocha. A hedge before "and" ("docs must be updated later and all tests pass", "the parser is
+  untested and all 12 tests pass") no longer voids the test clause; only "and" after a test
+  subject ("the existing tests and 13 new ones pass") joins the clauses. `git stash -m wip` is
+  a stash.
+- Shell writes: `popd` / `Pop-Location` return to the directory before the last `pushd`, a `cd`
+  inside `{ ...; }` changes the directory, and `git apply --stat --apply` is a write.
 - Transcripts whose home directory is written as `~` (redacted) resolve their working
   directory like the paths in them, so edits inside the repo are counted.
 
