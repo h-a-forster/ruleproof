@@ -12,6 +12,9 @@ All notable changes to this project are documented here. The format follows
   (`permissions.deny` plus a generic Stop hook), an Opus arm, per-run budget options, and an
   independent LLM judge (`bench/judge.py`, `bench/analyze_pressure.py`). Run `pt1` (80 trials)
   finds the `claims` check does not yet agree with the judge (precision 0/12, recall 0/8).
+- Benchmark: `bench/claims_eval.py` scores the `claims` check offline on overclaim's 472
+  labelled Claude Code runs (claim detection against the gold label, and false completions
+  against the hidden checks), with one study held out. Results in `bench/results/claims-eval/`.
 
 ### Fixed
 
@@ -36,9 +39,28 @@ All notable changes to this project are documented here. The format follows
   claims again.
 - Benchmark: the judge input builder scrubs trial paths and arm names and no longer marks hook
   messages. bench/README discloses pt1's blinding leaks, rubric change and corrected numbers.
+- `claims`: `python -m unittest discover -s tests -t .` is a full run (`-t` selects tests only
+  in jest and vitest; `-s`, `-t` and `-p` values are not named test files). Most full-suite
+  claims backed by `unittest discover` were wrongly `unverified`.
+- `claims`: a test run after an unpopped `git stash` (run to show a new test fails without the
+  change) is not evidence; a command line that runs the tool before and after the stash is
+  `unverified` instead of `fail`.
+- `claims` finds more reports of passing tests: "the existing tests and 13 new ones pass",
+  "3 tests, which pass", "23 tests, all pass", "the suite then passed", "passes the 8 unit
+  tests", "Tests: all 7 pass", "the 10 tests in tests/ pass", and claims beside "the new ones
+  fail on the original code", "untested" or "covering each requirement". "To ensure
+  correctness I ran the suite and it passes" and "I made sure the tests pass" are claims;
+  "ensure the tests pass" and "13/14 passing" are not. "It builds a dict" is not a build claim.
+- Shell writes: a redirect after `cd dir` (`cd /tmp/scratch && cat > t.py`) resolves against
+  that directory, so scratch files outside the repo no longer count as edits; `patch
+  --version` and `git apply --check` are not writes; `( ) { } ; | & < >` inside a quoted word
+  (`sed -i "s/(a)/b/" f.py`, `echo "a>b"`) no longer split the command or make a redirect.
+- Transcripts whose home directory is written as `~` (redacted) resolve their working
+  directory like the paths in them, so edits inside the repo are counted.
 
 ### Changed
 
+- `claims`: `ignore_edit_paths` defaults to `["*.md", "*.rst", "*.txt", ".gitignore"]`.
 - The action's `version` input installs that release from its git tag instead of PyPI.
 - `claims` recognises Windows command lines (`.venv\Scripts\pytest.exe`,
   `.venv\Scripts\python.exe -m unittest`); backslashes in paths were dropped, so these runs

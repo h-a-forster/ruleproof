@@ -471,6 +471,26 @@ was not recorded). About $25 in total.
   `head/` numbers are fitted to this data.
 - Haiku 4.5 was used for the four Haiku arms, not Haiku 5.5, to stay within budget.
 
+## Claims check on labelled runs
+
+`claims_eval.py` scores the `claims` check offline on the runs
+[overclaim](https://github.com/h-a-forster/overclaim) publishes (download and extract its
+`transcripts.tar.gz` assets as its `results/README.md` describes; no model is called):
+
+```
+uv run python bench/claims_eval.py --data ../overclaim/results --write
+uv run python bench/claims_eval.py --data ../overclaim/results --study setups --errors
+```
+
+It reports, per study, how well `find_claims` matches the gold `claims_tests_pass` label, and
+how often the check fails or leaves unverified the runs labelled `complete`, split by whether
+the hidden check passed. Two configurations: `workspace` (the agent's working directory is the
+repo, as in normal use) and `empty` (overclaim's detector setup). Study `setups` was used to find
+the errors fixed after v0.1.0; study `interventions` was held out and scored once afterwards.
+Results: [results/claims-eval/](results/claims-eval/results.md); the before/after table is in the
+[README](../README.md#results). To score another version, put its `src` first on `PYTHONPATH`
+(for example a `git worktree` of `v0.1.0`).
+
 ## Threats to validity
 
 - Small n: 3 repetitions of 5 tasks per arm, so effectively 5 tasks. Intervals are wide; only

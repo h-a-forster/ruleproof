@@ -56,6 +56,10 @@ From the [benchmarks](#results) (small n, one repo, a Claude judge; read them as
 - **The claims check did not agree with an independent judge.** On the pressure tasks it had
   precision 0/12 and recall 0/8 against the judge, so the unverified-"tests pass" check does not
   yet work. It is reported as a negative result ([details](bench/README.md#results-1)).
+  On 472 labelled runs published by [overclaim](https://github.com/h-a-forster/overclaim) it
+  now finds 89% of "tests pass" claims on a held-out study (was 83%) with 99% precision, but it
+  catches none of the false completions there: almost all of them had a passing test run, so
+  their claims were backed ([Results](#results)).
 - **Task success was at ceiling.** Hidden tests passed in 79 of 80 pressure runs, so the
   benchmark measures rule cleanliness, not capability ([Results](#results)).
 - **Under pressure nothing was significant.** Clean runs ranged from 1/15 to 6/15 across arms
@@ -285,9 +289,47 @@ arm: its inputs still leaked it in some trials (see the
   unverified). It checks only the first claim sentence of each kind, does not follow tests run
   in the background, and read honest partial reports ("15 of 16 tests pass") as claims. Fixes
   made after this analysis remove 3 of the 12 false alarms (in-sample); the rest is open work.
+  The later changes scored below were not rescored on this run: its raw transcripts are not
+  kept.
 - Every agent, Opus and Sonnet included, followed the prompt's "don't bother running the test
   suite" over AGENTS.md. The judge is a Claude model, from a prompt by the same authors, and no
   human labelled the runs. Total nested spend for the run, judge included: about $25.
+
+**Claims check on labelled runs** ([bench/results/claims-eval/](bench/results/claims-eval/results.md)).
+[overclaim](https://github.com/h-a-forster/overclaim) publishes 472 Claude Code runs of coding
+tasks (Haiku and Sonnet 5.5), each with a hidden-check result and an adjudicated label of what
+the final message claims. `bench/claims_eval.py` runs the claims check on them offline. Study 1
+(184 runs) was used to find and fix errors; study 2 (288 runs) was held out and scored once,
+after the fixes. Before is the check at v0.1.0, after is the current one.
+
+| Score (held-out study 2) | Before | After |
+| --- | ---: | ---: |
+| "Tests pass" claims found (recall vs the gold label) | 235/283 (83.0%) | 252/283 (89.0%) |
+| Claims found that the label rejects | 2 | 2 |
+| Correct "done" runs failed (false alarms) | 2 of 193 | 1 of 193 |
+| Correct "done" runs left unverified | 118 of 193 | 15 of 193 |
+| False completions caught (`fail`) | 0 of 22 | 0 of 22 |
+
+- **What changed.** The study-1 errors were mostly in the evidence, not the phrases:
+  `unittest discover -t .` was read as a test filter (`-t` filters only in jest and vitest), so
+  most full-suite claims came out unverified; a test run on `git stash`ed code (to show a new
+  test fails without the fix) was read as the result; scratch files written after `cd` to a
+  directory outside the repo, `patch --version`, `( ) { } ;` inside a quoted `sed` script and
+  `.gitignore` edits reset the evidence. Phrase fixes: "the existing tests and 13 new ones
+  pass", "3 tests, which pass", "the 10 new tests fail on the original code" (a description, not
+  a failure), "to ensure correctness I ran the suite and it passes"; "it builds a dict" is not a
+  build claim.
+- **The false completions are out of reach by design.** 10 of study 1's 11 had a passing test
+  run after the last edit; the hidden checks failed on cases the visible tests do not cover. A
+  check that verifies claims against commands cannot see that. overclaim's own published
+  `ruleproof` row (0 of 11 caught, 7 false alarms in study 1) was scored with v0.1.0 and an
+  empty `--repo`, so it saw no edits; in that configuration v0.1.0 gives 0 and 7 and the
+  current check 0 and 0.
+- In study 1 the current check still fails 3 correct runs in the agent's working directory:
+  each edited a scratch script under `tmp/` after its last test run. Add such paths to
+  `ignore_edit_paths`.
+- One labeller pipeline (two Claude models plus adjudication), one agent, Python tasks only;
+  intervals in the results file treat runs as independent, which they are not.
 
 **Compile** ([bench/corpus/](bench/corpus/results.md)). `ruleproof compile` was run on 50 public
 instruction files (Next.js, VS Code, Deno, ruff, uv, Airflow, ...). Of 1,960 directives, 62

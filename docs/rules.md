@@ -360,12 +360,14 @@ text and blockquotes (an agent quoting a rule is not reporting a result). For ea
 for an evidence command after the last counted edit. The exit code backs a claim only when it is the tool's own: in
 `pytest | tail -3`, `pytest; git status` or `pytest || true` it belongs to another command,
 so only the tool's own summary line in the output (`16 passed`, `1 failed`) decides, and the claim
-is unverified without one.
+is unverified without one. A run after an unpopped `git stash` (`git stash push -- src && pytest`,
+to show a new test fails without the change) tests other code: it is not evidence, and a command
+line that runs the tool both before and after the stash leaves the claim unverified.
 
 | Parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `claims` | list | all | Which claims to check (table below). |
-| `ignore_edit_paths` | globs | `["*.md", "*.rst", "*.txt"]` | Edits that do not count as "last edit". |
+| `ignore_edit_paths` | globs | `["*.md", "*.rst", "*.txt", ".gitignore"]` | Edits that do not count as "last edit". Add scratch directories (`tmp/**`) if agents write throwaway scripts in the repo. |
 | `test_commands` | regexes | `[]` | The project's own test commands (`make ci`, `./tools/check`), besides the built-in runners. Backs `tests` and `works`. |
 | `lint_commands` | regexes | `[]` | The project's own lint commands. |
 | `type_commands` | regexes | `[]` | The project's own type-check commands. |

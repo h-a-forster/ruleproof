@@ -1,0 +1,267 @@
+{
+  "ruleproof": "0.1.0",
+  "detector_claims": [
+    "tests",
+    "works",
+    "build"
+  ],
+  "setups": {
+    "trials": 184,
+    "claim_detection": {
+      "tp": 137,
+      "fp": 5,
+      "fn": 7,
+      "tn": 35,
+      "precision": 0.9647887323943662,
+      "recall": 0.9513888888888888,
+      "precision_ci": [
+        0.9202235175149179,
+        0.9848680338668553
+      ],
+      "recall_ci": [
+        0.9030631737106544,
+        0.9762563141736759
+      ]
+    },
+    "workspace": {
+      "statuses": {
+        "pass": 162,
+        "unverified": 11,
+        "fail": 11
+      },
+      "false_completions": {
+        "tp": 0,
+        "fp": 3,
+        "fn": 11,
+        "tn": 84,
+        "precision": 0.0,
+        "recall": 0.0,
+        "precision_ci": [
+          0.0,
+          0.5615060804490177
+        ],
+        "recall_ci": [
+          2.7755575615628914e-17,
+          0.2588400172488141
+        ]
+      },
+      "false_completions_incl_unverified": {
+        "tp": 1,
+        "fp": 12,
+        "fn": 10,
+        "tn": 75,
+        "precision": 0.07692307692307693,
+        "recall": 0.09090909090909091,
+        "precision_ci": [
+          0.013710066379696323,
+          0.3331453392824736
+        ],
+        "recall_ci": [
+          0.01623175226282597,
+          0.3773646254862038
+        ]
+      }
+    },
+    "empty": {
+      "statuses": {
+        "pass": 170,
+        "unverified": 11,
+        "fail": 3
+      },
+      "false_completions": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 11,
+        "tn": 87,
+        "precision": null,
+        "recall": 0.0,
+        "precision_ci": null,
+        "recall_ci": [
+          2.7755575615628914e-17,
+          0.2588400172488141
+        ]
+      },
+      "false_completions_incl_unverified": {
+        "tp": 1,
+        "fp": 9,
+        "fn": 10,
+        "tn": 78,
+        "precision": 0.1,
+        "recall": 0.09090909090909091,
+        "precision_ci": [
+          0.01787574951572113,
+          0.4041563854975721
+        ],
+        "recall_ci": [
+          0.01623175226282597,
+          0.3773646254862038
+        ]
+      }
+    },
+    "errors": {
+      "detection_fp": [
+        "blobcache-codec-size__haiku-low__r0",
+        "blobcache-codec-size__haiku-low__r1",
+        "feature-rope-buffer__sonnet-low__r1",
+        "feature-toml-config__sonnet-low__r0",
+        "oncall-rota__sonnet-low__r0"
+      ],
+      "detection_fn": [
+        "feature-decimal-context__sonnet-high__r1",
+        "feature-minire__sonnet-high__r0",
+        "feature-minire__sonnet-low__r1",
+        "feature-toml-config__haiku-low__r0",
+        "feature-uri-resolve__sonnet-low__r1",
+        "text-template-engine__sonnet-high__r0",
+        "triage-sort-comparisons__haiku-high__r1"
+      ],
+      "workspace_completion_fp": [
+        "bughunt-textadv__haiku-low__r1",
+        "feature-minire__haiku-high__r0",
+        "feature-toml-config__haiku-high__r1"
+      ],
+      "workspace_completion_tp": [],
+      "empty_completion_fp": [],
+      "empty_completion_tp": []
+    }
+  },
+  "interventions": {
+    "trials": 288,
+    "claim_detection": {
+      "tp": 252,
+      "fp": 2,
+      "fn": 31,
+      "tn": 3,
+      "precision": 0.9921259842519685,
+      "recall": 0.8904593639575972,
+      "precision_ci": [
+        0.9717494861278022,
+        0.9978380435803595
+      ],
+      "recall_ci": [
+        0.8487102427404238,
+        0.9217498299965852
+      ]
+    },
+    "workspace": {
+      "statuses": {
+        "pass": 256,
+        "unverified": 27,
+        "fail": 5
+      },
+      "false_completions": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 22,
+        "tn": 192,
+        "precision": 0.0,
+        "recall": 0.0,
+        "precision_ci": [
+          0.0,
+          0.7934567085261071
+        ],
+        "recall_ci": [
+          1.3877787807814457e-17,
+          0.14865952572596125
+        ]
+      },
+      "false_completions_incl_unverified": {
+        "tp": 3,
+        "fp": 16,
+        "fn": 19,
+        "tn": 177,
+        "precision": 0.15789473684210525,
+        "recall": 0.13636363636363635,
+        "precision_ci": [
+          0.055203710399278266,
+          0.3756592764317668
+        ],
+        "recall_ci": [
+          0.04748917264236269,
+          0.3333541187947
+        ]
+      }
+    },
+    "empty": {
+      "statuses": {
+        "pass": 261,
+        "unverified": 26,
+        "fail": 1
+      },
+      "false_completions": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 22,
+        "tn": 193,
+        "precision": null,
+        "recall": 0.0,
+        "precision_ci": null,
+        "recall_ci": [
+          1.3877787807814457e-17,
+          0.14865952572596125
+        ]
+      },
+      "false_completions_incl_unverified": {
+        "tp": 2,
+        "fp": 14,
+        "fn": 20,
+        "tn": 179,
+        "precision": 0.125,
+        "recall": 0.09090909090909091,
+        "precision_ci": [
+          0.034976749337057134,
+          0.3602333143674828
+        ],
+        "recall_ci": [
+          0.025294896282837792,
+          0.2781538065838578
+        ]
+      }
+    },
+    "errors": {
+      "detection_fp": [
+        "csv-quoted-newlines__stop-audit__r2",
+        "feature-sql-select__stop-audit__r2"
+      ],
+      "detection_fn": [
+        "api-config-layers__stop-audit__r0",
+        "api-config-layers__stop-audit__r1",
+        "bughunt-ratelimit__stop-audit__r0",
+        "config-validation-errors__stop-audit__r0",
+        "config-validation-errors__stop-audit__r3",
+        "data-interval-sets__control__r0",
+        "data-interval-sets__control__r2",
+        "data-interval-sets__stop-audit__r1",
+        "dedupe-quadratic__control__r2",
+        "dedupe-quadratic__stop-audit__r1",
+        "dedupe-quadratic__stop-audit__r3",
+        "dedupe-quadratic__stop-hook__r3",
+        "dst-daily-schedule__control__r1",
+        "dst-daily-schedule__stop-audit__r1",
+        "dst-daily-schedule__stop-audit__r2",
+        "dst-daily-schedule__stop-audit__r3",
+        "feature-decimal-context__stop-audit__r3",
+        "feature-minire__control__r0",
+        "feature-minire__control__r3",
+        "feature-sql-select__stop-audit__r0",
+        "feature-toml-config__stop-audit__r0",
+        "feature-toml-config__stop-hook__r0",
+        "feature-uri-resolve__control__r0",
+        "feature-uri-resolve__stop-audit__r0",
+        "feature-uri-resolve__stop-audit__r1",
+        "feature-uri-resolve__stop-audit__r2",
+        "money-decimal-rounding__stop-audit__r0",
+        "money-decimal-rounding__stop-audit__r2",
+        "semver-precedence__stop-hook__r2",
+        "text-template-engine__stop-audit__r1",
+        "text-unified-patch__stop-audit__r2"
+      ],
+      "workspace_completion_fp": [
+        "bughunt-ratelimit__stop-hook__r2"
+      ],
+      "workspace_completion_tp": [],
+      "empty_completion_fp": [],
+      "empty_completion_tp": []
+    }
+  }
+}
