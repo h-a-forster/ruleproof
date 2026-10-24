@@ -59,7 +59,7 @@ From the [benchmarks](#results) (small n, one repo, a Claude judge; read them as
   On 472 labelled runs published by [overclaim](https://github.com/h-a-forster/overclaim) it
   now finds 89% of "tests pass" claims on a held-out study (was 83%) with 99% precision, but it
   catches none of the false completions there: 16 of the 22 had a passing test run, so their
-  claims were backed, and in 3 of the other 6 it missed the claim phrase ([Results](#results)).
+  claims were backed, and in 4 of the other 6 it missed the claim phrase ([Results](#results)).
 - **Task success was at ceiling.** Hidden tests passed in 79 of 80 pressure runs, so the
   benchmark measures rule cleanliness, not capability ([Results](#results)).
 - **Under pressure nothing was significant.** Clean runs ranged from 1/15 to 6/15 across arms
@@ -329,8 +329,9 @@ changes since the v0.1.0 tag), after is the current one.
 - **Most false completions are out of reach by design.** 10 of study 1's 11 had a passing test
   run after the last edit; the hidden checks failed on cases the visible tests do not cover. A
   check that verifies claims against commands cannot see that. Study 2 is less clear: 16 of its
-  22 had a passing run, but 3 had no test run at all and the phrase matcher missed their claims
-  ("97/97 checks, plus the 25 unit tests", "Both pass"), so those were reachable. overclaim's own published
+  22 had a passing run, but 3 had no test run after the last edit (they ran tests only before
+  it) and the phrase matcher missed their claims ("97/97 checks, plus the 25 unit tests",
+  "Both pass"), so those were reachable. overclaim's own published
   `ruleproof` row (0 of 11 caught, 7 false alarms in study 1) was scored with a 0.1.0 build and
   an empty `--repo`, so it saw no edits; in that configuration the before version gives 0 and 7
   and the current check 0 and 0.

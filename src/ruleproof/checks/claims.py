@@ -382,8 +382,12 @@ _CLAUSES = re.compile(
 # parser is untested and all tests pass", "there are no tests and the build passed" and "I
 # added 5 tests and ruff check passed" the clauses stay apart.
 _JOINS_SUBJECT = re.compile(
-    r"(?:\s*(?:(?:the|all|both|my|our|its|these|those|\d+|[a-z]+)\s+){0,3}?"
-    r"(?:tests?|specs?|checks|suites?|ones?)\b[^,;.!?]{0,40}?\b(?:pass|passed)"
+    r"(?:\s*(?:(?:(?:the|all|both|my|our|its|these|those|\d+|[a-z]+)\s+){0,3}?"
+    r"(?:tests?|specs?|suites?|ones?)"
+    # "the type checks", "the CI checks" are other tools; "my own checks", "25 audit checks" join.
+    r"|(?:(?!(?:types?|typing|lint\w*|ci|format\w*|style|build|static|ruff|mypy|pyright|tsc"
+    r"|eslint|prettier|black|flake8|pre-commit)\b)(?:\d+|[a-z]+)\s+){0,3}?checks"
+    r")\b[^,;.!?]{0,40}?\b(?:pass|passed)"
     # "the unit tests and the audit script all pass": one verdict for both subjects.
     r"|[^,;.!?]{0,40}?\b(?:all|both)\s+(?:now\s+|still\s+)?(?:pass|passed))\b"
     r"(?![^,;.!?]*\bfail)",

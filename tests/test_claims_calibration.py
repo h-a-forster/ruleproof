@@ -434,6 +434,10 @@ def test_home_relative_session_counts_edits_inside_it(monkeypatch: pytest.Monkey
         # "and" joins only a second clause whose subject is tests, or that says "all pass".
         ("There are no tests and the build passed.", {"build"}),
         ("I added 5 tests and ruff check passed.", {"lint"}),
+        # Bare "checks" after other words is a tool, not the tests.
+        ("I added 5 tests and the type checks passed.", {"types"}),
+        ("I wrote 3 tests and the lint checks pass.", set()),
+        ("I updated the tests and the CI checks passed.", set()),
         ("I updated the tests and the snapshot passed review.", set()),
         ("None of the tests and checks pass.", set()),
         ("I didn't touch the tests and the lint passed.", {"lint"}),
@@ -442,6 +446,16 @@ def test_home_relative_session_counts_edits_inside_it(monkeypatch: pytest.Monkey
 )
 def test_and_joins_only_test_subjects(text: str, expected: set[str]) -> None:
     assert set(find_claims(text, ["tests", "lint", "types", "build"])) == expected
+
+
+def test_type_checks_clause_does_not_claim_tests() -> None:
+    s = session(
+        edit("src/a.py"),
+        cmd("uv run mypy"),
+        cmd("uv run ruff check"),
+        say("I added 5 tests and the type checks passed."),
+    )
+    assert run(s, claims=["tests", "lint", "types"]).status == "pass"
 
 
 @pytest.mark.parametrize(
@@ -479,6 +493,7 @@ def test_no_tests_and_build_passed_is_not_a_tests_claim() -> None:
         "(make && cd /tmp) && echo x > a.py",
         "(true; cd /tmp); echo x > a.py",
         "true | cd /tmp; echo > a.py",
+        "cd /tmp |& cat; echo > a.py",
         "cd /tmp &\necho > a.py",
     ],
 )

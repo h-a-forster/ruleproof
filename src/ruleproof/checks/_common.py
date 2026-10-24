@@ -870,7 +870,7 @@ def _in_child_shell(text: str, m: re.Match[str]) -> bool:
     ):
         return True
     rest = text[m.end() :].lstrip(" 	")
-    return rest[:1] in ("|", "&") and rest[:2] not in ("||", "&&", "&>", "|&")
+    return rest[:1] in ("|", "&") and rest[:2] not in ("||", "&&", "&>")
 
 
 def _paren_depths(text: str) -> list[int]:
