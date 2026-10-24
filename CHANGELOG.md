@@ -40,35 +40,38 @@ All notable changes to this project are documented here. The format follows
 - Benchmark: the judge input builder scrubs trial paths and arm names and no longer marks hook
   messages. bench/README discloses pt1's blinding leaks, rubric change and corrected numbers.
 - `claims`: `python -m unittest discover -s tests -t .` is a full run (`-t` is the top-level
-  directory there and the timeout in mocha, a test filter elsewhere; `-s`, `-t` and `-p` values
-  are not named test files). Most full-suite
-  claims backed by `unittest discover` were wrongly `unverified`.
-- `claims`: a test run after an unpopped `git stash` (run to show a new test fails without the
-  change) is not evidence; a command line that runs the tool before and after the stash is
-  `unverified` instead of `fail`.
+  directory there and the timeout in mocha; `-s`, `-t` and `-p` values are not named test
+  files). Most full-suite claims backed by `unittest discover` were wrongly `unverified`. This
+  also holds for a project's own test command (`test_commands`) that runs `unittest` or mocha
+  behind a runner prefix or coverage wrapper (`uv run python -m unittest discover -t .`,
+  `coverage run -m unittest discover -t .`, `npx nyc mocha -t 5000`); `coverage run -m unittest
+  tests.test_app` runs named test modules. Elsewhere `-t` stays a name filter (`npm test -- -t
+  parser`, `npx jest -t parser`).
+- `claims`: a test run after an unpopped `git stash` (`git stash`, `git stash -m wip`, `git
+  stash push -- src`, `git -C . stash`; run to show a new test fails without the change) is not
+  evidence. A command line that runs the tool both with and without the changes stashed, in
+  either order (`pytest; git stash && pytest; git stash pop`, `git stash && pytest; git stash
+  pop && pytest`), is `unverified`, whatever the runs printed. A stash made in an earlier
+  command is not tracked.
 - `claims` finds more reports of passing tests: "the existing tests and 13 new ones pass",
   "3 tests, which pass", "23 tests, all pass", "the suite then passed", "passes the 8 unit
   tests", "Tests: all 7 pass", "the 10 tests in tests/ pass", and claims beside "the new ones
   fail on the original code", "untested" or "covering each requirement". "To ensure
   correctness I ran the suite and it passes" and "I made sure the tests pass" are claims;
-  "ensure the tests pass" and "13/14 passing" are not. "It builds a dict" is not a build claim.
+  "make sure ..." (any object), "ensure the tests pass", "ensure the new parser passes all
+  tests" and "13/14 passing" are not. "It builds a dict" is not a build claim. "And" joins two
+  clauses into one claim only when the second clause's subject is tests ("the existing tests
+  and 13 new ones pass") or it ends "all pass", the first ends in tests and is not negated, and
+  no failure follows: "there are no tests and the build passed" is a build claim only.
 - Shell writes: a redirect after `cd dir` (`cd /tmp/scratch && cat > t.py`) resolves against
-  that directory, so scratch files outside the repo no longer count as edits; `patch
-  --version` and `git apply --check` are not writes; `( ) { } ; | & < >` inside a quoted word
-  (`sed -i "s/(a)/b/" f.py`, `echo "a>b"`) no longer split the command or make a redirect.
-- `claims`: a project's own test command (`test_commands`) that runs `unittest` or mocha behind
-  a runner prefix or coverage wrapper (`uv run python -m unittest discover -t .`, `coverage run
-  -m unittest discover -t .`, `npx nyc mocha -t 5000`) no longer reads `-t` as a test filter;
-  `-p test_*.py` is a discover pattern, and `coverage run -m unittest tests.test_app` runs named
-  test modules. Built-in test runs already started at the tool.
-- `claims`: `-t` behind a script runner (`npm test -- -t parser`, `yarn test -t parser`) is a
-  name filter again, so it does not back a full-suite claim; it is not one in `unittest` or
-  mocha. A hedge before "and" ("docs must be updated later and all tests pass", "the parser is
-  untested and all 12 tests pass") no longer voids the test clause; only "and" after a test
-  subject ("the existing tests and 13 new ones pass") joins the clauses. `git stash -m wip` is
-  a stash.
-- Shell writes: `popd` / `Pop-Location` return to the directory before the last `pushd`, a `cd`
-  inside `{ ...; }` changes the directory, and `git apply --stat --apply` is a write.
+  that directory, so scratch files outside the repo no longer count as edits. `pushd` / `popd`
+  / `Pop-Location` and a `cd` inside `{ ...; }` are followed; a `cd` in a subshell `( )`, a
+  pipeline or a background job (`cd /tmp &`) is not. `patch --version` and `git apply --check`
+  are not writes (`git apply --stat --apply` still is). `( ) { } ; | & < >` inside a quoted
+  word (`sed -i "s/(a)/b/" f.py`, `echo "a>b"`) no longer split the command or make a redirect
+  when commands are split into simple commands (`claims`, shell writes); `forbid-command`,
+  `require-command` and the PreToolUse hook still match patterns against those quoted words as
+  written (`su -c 'make;deploy'` matches `deploy`).
 - Transcripts whose home directory is written as `~` (redacted) resolve their working
   directory like the paths in them, so edits inside the repo are counted.
 

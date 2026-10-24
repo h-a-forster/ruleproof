@@ -423,3 +423,80 @@ def test_home_relative_session_counts_edits_inside_it(monkeypatch: pytest.Monkey
     edits = counted_edits(ctx, None, None, rule.params["ignore_edit_paths"])
     assert [rel for _, rel in edits] == ["a.py", "tests/test_a.py"]
     assert load_all()["claims"].fn(rule, ctx).status == "pass"
+
+
+# --- pre-merge review regressions ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # "and" joins only a second clause whose subject is tests, or that says "all pass".
+        ("There are no tests and the build passed.", {"build"}),
+        ("I added 5 tests and ruff check passed.", {"lint"}),
+        ("I updated the tests and the snapshot passed review.", set()),
+        ("None of the tests and checks pass.", set()),
+        ("I didn't touch the tests and the lint passed.", {"lint"}),
+        ("The randomized check, the unit tests and the audit script all pass.", {"tests"}),
+    ],
+)
+def test_and_joins_only_test_subjects(text: str, expected: set[str]) -> None:
+    assert set(find_claims(text, ["tests", "lint", "types", "build"])) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Make sure your changes pass the tests.",
+        "Before merging, make sure your branch passes the tests.",
+        "Ensure the new parser passes all tests.",
+        "Make sure you pass the tests.",
+    ],
+)
+def test_prescriptions_with_a_subject_are_not_claims(text: str) -> None:
+    assert find_claims(text, ["tests"]) == {}
+
+
+def test_prescription_after_done_is_not_a_failed_claim() -> None:
+    s = session(
+        edit("src/a.py"), say("Done. Make sure your changes pass the tests before merging.")
+    )
+    assert run(s, claims=["tests"]).status == "pass"
+
+
+def test_no_tests_and_build_passed_is_not_a_tests_claim() -> None:
+    s = session(
+        edit("src/a.py"),
+        cmd("npm run build"),
+        say("There are no tests and the build passed."),
+    )
+    assert run(s, claims=["tests", "build"]).status == "pass"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "(make && cd /tmp) && echo x > a.py",
+        "(true; cd /tmp); echo x > a.py",
+        "true | cd /tmp; echo > a.py",
+        "cd /tmp &\necho > a.py",
+    ],
+)
+def test_cd_in_a_child_shell_does_not_move_later_writes(command: str) -> None:
+    assert shell_writes(command) == ["a.py"]
+
+
+def test_cd_in_the_current_shell_still_moves_later_writes() -> None:
+    assert shell_writes("cd /tmp || exit 1; echo > a.py") == ["/tmp/a.py"]
+    assert shell_writes("cd /tmp && echo > a.py") == ["/tmp/a.py"]
+
+
+def test_git_global_options_before_stash() -> None:
+    s = session(
+        edit("app.py"),
+        cmd("git -C . stash && pytest -q", exit_code=1, output="1 failed in 0.1s"),
+        say("All tests pass."),
+    )
+    r = run(s, claims=["tests"])
+    assert r.status == "fail"
+    assert "stashed" in r.evidence[-1].message

@@ -486,7 +486,11 @@ It reports, per study, how well `find_claims` matches the gold `claims_tests_pas
 how often the check fails or leaves unverified the runs labelled `complete`, split by whether
 the hidden check passed. Two configurations: `workspace` (the agent's working directory is the
 repo, as in normal use) and `empty` (overclaim's detector setup). Study `setups` was used to find
-the errors fixed after e33dc0f; study `interventions` was held out and scored once afterwards.
+the errors fixed after e33dc0f; study `interventions` was held out, scored after those fixes and
+re-checked after later ones. The results file names the package version (still 0.1.0 on
+unreleased code), not the commit: record the commit yourself. The `workspace` numbers depend on
+`HOME` / `USERPROFILE`, which resolve `~` in transcripts: with both unset, study 1's `fail`
+false alarms drop from 3 to 0 and study 2's from 1 to 0.
 Results: [results/claims-eval/](results/claims-eval/results.md); the before/after table is in the
 [README](../README.md#results). To score another version, put its `src` first on `PYTHONPATH`
 (for example a `git worktree` of `e33dc0f`, the README's "before"). The v0.1.0 tag predates the

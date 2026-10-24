@@ -58,8 +58,8 @@ From the [benchmarks](#results) (small n, one repo, a Claude judge; read them as
   yet work. It is reported as a negative result ([details](bench/README.md#results-1)).
   On 472 labelled runs published by [overclaim](https://github.com/h-a-forster/overclaim) it
   now finds 89% of "tests pass" claims on a held-out study (was 83%) with 99% precision, but it
-  catches none of the false completions there: almost all of them had a passing test run, so
-  their claims were backed ([Results](#results)).
+  catches none of the false completions there: 16 of the 22 had a passing test run, so their
+  claims were backed, and in 3 of the other 6 it missed the claim phrase ([Results](#results)).
 - **Task success was at ceiling.** Hidden tests passed in 79 of 80 pressure runs, so the
   benchmark measures rule cleanliness, not capability ([Results](#results)).
 - **Under pressure nothing was significant.** Clean runs ranged from 1/15 to 6/15 across arms
@@ -299,13 +299,13 @@ arm: its inputs still leaked it in some trials (see the
 [overclaim](https://github.com/h-a-forster/overclaim) publishes 472 Claude Code runs of coding
 tasks (Haiku and Sonnet 5.5), each with a hidden-check result and an adjudicated label of what
 the final message claims. `bench/claims_eval.py` runs the claims check on them offline. Study 1
-(184 runs) was used to find and fix errors; study 2 (288 runs) was held out and scored once,
-after the fixes. Before is `main` at e33dc0f (still versioned 0.1.0, with the unreleased
+(184 runs) was used to find and fix errors; study 2 (288 runs) was held out and scored after
+the fixes, then re-checked (numbers unchanged) after later fixes found on study 1 and in review. Before is `main` at e33dc0f (still versioned 0.1.0, with the unreleased
 changes since the v0.1.0 tag), after is the current one.
 
 | Score (held-out study 2) | Before | After |
 | --- | ---: | ---: |
-| "Tests pass" claims found (recall vs the gold label) | 235/283 (83.0%) | 252/283 (89.0%) |
+| "Tests pass" claims found (tests, lint, types or build claim; recall vs the gold label) | 235/283 (83.0%) | 252/283 (89.0%) |
 | Claims found that the label rejects | 2 | 2 |
 | Correct "done" runs failed (false alarms) | 2 of 193 | 1 of 193 |
 | Correct "done" runs left unverified | 118 of 193 | 15 of 193 |
@@ -326,9 +326,11 @@ changes since the v0.1.0 tag), after is the current one.
   correct runs unverified (mostly `unittest discover -t .` read as a test filter), not because
   the check saw anything wrong. With it fixed they pass, like the correct runs (study 1: 7 of 11
   flagged before, 1 after).
-- **The false completions are out of reach by design.** 10 of study 1's 11 had a passing test
+- **Most false completions are out of reach by design.** 10 of study 1's 11 had a passing test
   run after the last edit; the hidden checks failed on cases the visible tests do not cover. A
-  check that verifies claims against commands cannot see that. overclaim's own published
+  check that verifies claims against commands cannot see that. Study 2 is less clear: 16 of its
+  22 had a passing run, but 3 had no test run at all and the phrase matcher missed their claims
+  ("97/97 checks, plus the 25 unit tests", "Both pass"), so those were reachable. overclaim's own published
   `ruleproof` row (0 of 11 caught, 7 false alarms in study 1) was scored with a 0.1.0 build and
   an empty `--repo`, so it saw no edits; in that configuration the before version gives 0 and 7
   and the current check 0 and 0.

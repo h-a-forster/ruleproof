@@ -240,8 +240,9 @@ class _Masker:
     scanned as commands even inside double quotes. Unterminated quotes are literal text.
     """
 
-    def __init__(self, s: str, ps: bool) -> None:
+    def __init__(self, s: str, ps: bool, keep_operators: bool = False) -> None:
         self.s, self.ps, self.out = s, ps, list(s)
+        self.keep_operators = keep_operators
 
     def blank(self, start: int, end: int) -> None:
         for k in range(start, min(end, len(self.s))):
@@ -418,7 +419,10 @@ class _Masker:
 
     def literal(self, positions: Iterable[int]) -> None:
         """Neutralise operators inside a quoted word (``sed -i "s/(a)/b/"``, ``echo "a>b"``):
-        they are text, not separators or redirects."""
+        they are text, not separators or redirects. Kept for pattern matching
+        (``keep_operators``): ``forbid-command`` patterns see ``su -c 'make;deploy'`` as written."""
+        if self.keep_operators:
+            return
         for k in positions:
             if self.s[k] in _QUOTED_OPERATORS:
                 self.out[k] = "_"
@@ -441,8 +445,8 @@ class _Masker:
         return min(i, n)
 
 
-def _mask(command: str, ps: bool) -> str:
-    m = _Masker(command, ps)
+def _mask(command: str, ps: bool, keep_operators: bool = False) -> str:
+    m = _Masker(command, ps, keep_operators)
     m.scan(0, None)
     return "".join(m.out)
 
@@ -515,9 +519,9 @@ def _read_word(s: str, i: int, ps: bool) -> str:
     return s[i:] if end == -1 else s[i:end]
 
 
-def _views(command: str, ps: bool, depth: int = 0) -> list[_View]:
+def _views(command: str, ps: bool, depth: int = 0, keep_operators: bool = False) -> list[_View]:
     ps = ps or bool(_PS_HINT.search(command))
-    masked = _mask(command, ps)
+    masked = _mask(command, ps, keep_operators)
     out = [_View(masked, ps)]
     if depth >= _MAX_NESTING:
         return out
@@ -536,7 +540,7 @@ def _views(command: str, ps: bool, depth: int = 0) -> list[_View]:
         nested.append((word, m.group(2).lower() in ("pwsh", "powershell")))
     for text, nested_ps in nested:
         if text.strip():
-            out.extend(_views(text, nested_ps, depth + 1))
+            out.extend(_views(text, nested_ps, depth + 1, keep_operators))
     for m in _SCRIPT_E.finditer(masked):
         code = _read_word(command, m.end(), ps)
         if code.strip():
@@ -558,7 +562,7 @@ def command_texts(command: str, match_quoted: bool = False, powershell: bool = F
     """
     if match_quoted:
         return [command]
-    views = _views(command, powershell)
+    views = _views(command, powershell, keep_operators=True)
     return [v.masked if v.raw else _QUOTE_CHARS.sub("", v.masked) for v in views]
 
 
@@ -855,6 +859,39 @@ def _after_cd(target: str, dirs: list[str | None] | None) -> str | None:
     return target
 
 
+def _in_child_shell(text: str, m: re.Match[str]) -> bool:
+    """A ``cd`` in a pipeline (``true | cd /tmp``) or a background job (``cd /tmp &``) runs
+    in a child shell and changes nothing after it."""
+    lead = m.group(0).lstrip(" 	")
+    if (
+        lead.startswith("|")
+        and not text.startswith("||", m.start())
+        and (m.start() == 0 or text[m.start() - 1] != "|")
+    ):
+        return True
+    rest = text[m.end() :].lstrip(" 	")
+    return rest[:1] in ("|", "&") and rest[:2] not in ("||", "&&", "&>", "|&")
+
+
+def _paren_depths(text: str) -> list[int]:
+    """Subshell depth before each character: ``(`` ... ``)`` and ``$(`` ... ``)``."""
+    depths, d = [], 0
+    for ch in text:
+        depths.append(d)
+        if ch == "(":
+            d += 1
+        elif ch == ")":
+            d = max(d - 1, 0)
+    depths.append(d)
+    return depths
+
+
+def _cd_reaches(depths: list[int], cd: int, at: int) -> bool:
+    """True when a ``cd`` at offset ``cd`` is still in effect at ``at``: it comes first and
+    no subshell it is in has closed in between (``(cd /tmp && make); echo > a.py``)."""
+    return cd < at and min(depths[cd : at + 1]) >= depths[cd]
+
+
 def _looks_absolute(path: str) -> bool:
     return bool(re.match(r"^(?:[/\\~]|[A-Za-z]:[\\/])", path))
 
@@ -880,11 +917,13 @@ def shell_writes(command: str, powershell: bool = False) -> list[str | None]:
         if view.raw:
             continue
         text = _QUOTE_CHARS.sub("", view.masked)
-        moves = list(_CD.finditer(text))
+        moves = [c for c in _CD.finditer(text) if not _in_child_shell(text, c)]
+        depth = _paren_depths(text)
         for m in _REDIRECT.finditer(text):
             target = m.group(1)
             if target.lower() not in _NULL_TARGETS and not target.startswith("$"):
-                out.append(_after_cd(target, _cwd_at([c for c in moves if c.start() < m.start()])))
+                before = [c for c in moves if _cd_reaches(depth, c.start(), m.start())]
+                out.append(_after_cd(target, _cwd_at(before)))
     for words in simple_commands(command, powershell):
         for cand in candidates(words):
             prog, args = cand[0].lower(), cand[1:]

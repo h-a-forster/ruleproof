@@ -25,8 +25,8 @@ outside the repository, so only the final message is read and every command coun
 ``empty`` false-completion row is the one overclaim publishes.
 
 Study 1 (``setups``) was used while tuning the phrase matcher; study 2 (``interventions``) is
-held out and was scored only after tuning. ``--write`` saves the aggregate numbers (no
-transcript text) to ``bench/results/claims-eval/``. No model is called.
+held out: scored after tuning, re-checked after later fixes. ``--write`` saves the aggregate
+numbers (no transcript text) to ``bench/results/claims-eval/``. No model is called.
 
 Standard library only, plus ruleproof itself.
 """
