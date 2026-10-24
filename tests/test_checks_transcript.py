@@ -582,3 +582,18 @@ def test_tokens_masked_in_excerpts() -> None:
     r = run(make_rule("forbid-command", command="curl"), s)
     assert "ghp_abcdef" not in r.summary
     assert r.evidence[0].excerpt is not None and "ghp_<redacted:" in r.evidence[0].excerpt
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "su -c 'true;deploy'",
+        "watch -n5 'make&&deploy'",
+        "runuser -u app -c 'make;deploy'",
+        "script -c 'ls;deploy' /dev/null",
+    ],
+)
+def test_command_matches_sees_operators_in_quoted_words(command: str) -> None:
+    # forbid-command and the PreToolUse hook match the words as written: an operator inside
+    # a short quoted word is not turned into a word character.
+    assert command_matches(re.compile(r"\bdeploy\b"), command)

@@ -240,8 +240,9 @@ class _Masker:
     scanned as commands even inside double quotes. Unterminated quotes are literal text.
     """
 
-    def __init__(self, s: str, ps: bool) -> None:
+    def __init__(self, s: str, ps: bool, keep_operators: bool = False) -> None:
         self.s, self.ps, self.out = s, ps, list(s)
+        self.keep_operators = keep_operators
 
     def blank(self, start: int, end: int) -> None:
         for k in range(start, min(end, len(self.s))):
@@ -342,6 +343,8 @@ class _Masker:
                     continue
                 if any(ch.isspace() for ch in s[i + 1 : j]):
                     self.blank(i + 1, j)
+                else:
+                    self.literal(range(i + 1, j))
                 i = j + 1
                 continue
             if c == '"':
@@ -410,7 +413,19 @@ class _Masker:
             for k in literal:
                 if s[k] != "\n":
                     self.out[k] = " "
+        else:
+            self.literal(literal)
         return i + 1
+
+    def literal(self, positions: Iterable[int]) -> None:
+        """Neutralise operators inside a quoted word (``sed -i "s/(a)/b/"``, ``echo "a>b"``):
+        they are text, not separators or redirects. Kept for pattern matching
+        (``keep_operators``): ``forbid-command`` patterns see ``su -c 'make;deploy'`` as written."""
+        if self.keep_operators:
+            return
+        for k in positions:
+            if self.s[k] in _QUOTED_OPERATORS:
+                self.out[k] = "_"
 
     def heredocs(self, i: int, delimiters: list[str]) -> int:
         s, n = self.s, len(self.s)
@@ -430,8 +445,8 @@ class _Masker:
         return min(i, n)
 
 
-def _mask(command: str, ps: bool) -> str:
-    m = _Masker(command, ps)
+def _mask(command: str, ps: bool, keep_operators: bool = False) -> str:
+    m = _Masker(command, ps, keep_operators)
     m.scan(0, None)
     return "".join(m.out)
 
@@ -468,6 +483,7 @@ _SCRIPT_E = re.compile(
     r"(?:\s+-\w+)*?\s+-[ce]\s+"
 )
 _QUOTE_CHARS = re.compile(r"[\"']")
+_QUOTED_OPERATORS = frozenset(";&|(){}<>")
 _MAX_NESTING = 4
 
 
@@ -503,9 +519,9 @@ def _read_word(s: str, i: int, ps: bool) -> str:
     return s[i:] if end == -1 else s[i:end]
 
 
-def _views(command: str, ps: bool, depth: int = 0) -> list[_View]:
+def _views(command: str, ps: bool, depth: int = 0, keep_operators: bool = False) -> list[_View]:
     ps = ps or bool(_PS_HINT.search(command))
-    masked = _mask(command, ps)
+    masked = _mask(command, ps, keep_operators)
     out = [_View(masked, ps)]
     if depth >= _MAX_NESTING:
         return out
@@ -524,7 +540,7 @@ def _views(command: str, ps: bool, depth: int = 0) -> list[_View]:
         nested.append((word, m.group(2).lower() in ("pwsh", "powershell")))
     for text, nested_ps in nested:
         if text.strip():
-            out.extend(_views(text, nested_ps, depth + 1))
+            out.extend(_views(text, nested_ps, depth + 1, keep_operators))
     for m in _SCRIPT_E.finditer(masked):
         code = _read_word(command, m.end(), ps)
         if code.strip():
@@ -546,7 +562,7 @@ def command_texts(command: str, match_quoted: bool = False, powershell: bool = F
     """
     if match_quoted:
         return [command]
-    views = _views(command, powershell)
+    views = _views(command, powershell, keep_operators=True)
     return [v.masked if v.raw else _QUOTE_CHARS.sub("", v.masked) for v in views]
 
 
@@ -636,7 +652,7 @@ def simple_commands(command: str, powershell: bool = False) -> list[list[str]]:
     return out
 
 
-def _candidates(words: list[str]) -> Iterable[list[str]]:
+def candidates(words: list[str]) -> Iterable[list[str]]:
     """``words`` and what remains after each runner prefix (``uv run``, ``npx``, ``env X=1``)."""
     pos = 0
     while pos < len(words):
@@ -784,9 +800,9 @@ def exit_belongs_to(command: str, powershell: bool, hit: Callable[[list[str]], b
 
 
 def _invocations(words: list[str]) -> Iterable[list[str]]:
-    """``_candidates``, plus the command with a script path kept whole (``./scripts/test.sh``,
+    """``candidates``, plus the command with a script path kept whole (``./scripts/test.sh``,
     ``.\\test.ps1``), so a pattern can name a script without matching the ``test`` builtin."""
-    yield from _candidates(words)
+    yield from candidates(words)
     head = next((k for k, w in enumerate(words) if not _ASSIGNMENT.match(w)), None)
     if head is not None and re.search(r"[\\/]", words[head]):
         yield [words[head].replace("\\", "/"), *words[head + 1 :]]
@@ -799,6 +815,91 @@ _NULL_TARGETS = frozenset(["/dev/null", "nul", "$null", "/dev/stdout", "/dev/std
 _FORMAT_WRITES = re.compile(
     r"^(?:ruff format|black|isort|cargo fmt|rustfmt|gofmt -w|goimports -w|shfmt -w"
     r"|dotnet format|mix format|deno fmt)\b"
+)
+# `cd dir && cat > file`: the directory a later relative redirect target is in. A quoted
+# directory with spaces is masked, and leaves the group empty.
+_CD = re.compile(
+    r"(?:^|[;&|\n{]\s*)(?:(cd|set-location|sl)|pushd|push-location)"
+    r"(?:[ \t]+(?:-\w+[ \t]+)?([^\s;&|<>(){}]*))?(?=\s*(?:$|[;&|\n)}]))"
+    r"|(?:^|[;&|\n{]\s*)(?:popd|pop-location)(?=\s*(?:$|[;&|\n)}]))",
+    re.IGNORECASE,
+)
+
+
+def _cwd_at(moves: list[re.Match[str]]) -> list[str | None] | None:
+    """The ``cd`` / ``pushd`` directories in effect after ``moves``; ``popd`` drops back to
+    before the last ``pushd``. None when a ``popd`` has no ``pushd`` to undo."""
+    dirs: list[str | None] = []
+    pushes: list[int] = []
+    for m in moves:
+        if m.group(0).strip(" \t\n;&|{").lower() in ("popd", "pop-location"):
+            if not pushes:
+                return None
+            del dirs[pushes.pop() :]
+        else:
+            if not m.group(1):
+                pushes.append(len(dirs))
+            dirs.append(m.group(2))
+    return dirs
+
+
+def _after_cd(target: str, dirs: list[str | None] | None) -> str | None:
+    """``target`` of a redirect after the ``cd`` commands ``dirs`` that precede it; None when
+    one of them changed to a directory that cannot be read."""
+    if _looks_absolute(target):
+        return target
+    if dirs is None:
+        return None
+    for d in reversed(dirs):
+        if not d or d == "-":
+            return None
+        target = f"{d.rstrip('/')}/{target}"
+        if _looks_absolute(d):
+            break
+    return target
+
+
+def _in_child_shell(text: str, m: re.Match[str]) -> bool:
+    """A ``cd`` in a pipeline (``true | cd /tmp``) or a background job (``cd /tmp &``) runs
+    in a child shell and changes nothing after it."""
+    lead = m.group(0).lstrip(" 	")
+    if (
+        lead.startswith("|")
+        and not text.startswith("||", m.start())
+        and (m.start() == 0 or text[m.start() - 1] != "|")
+    ):
+        return True
+    rest = text[m.end() :].lstrip(" 	")
+    return rest[:1] in ("|", "&") and rest[:2] not in ("||", "&&", "&>")
+
+
+def _paren_depths(text: str) -> list[int]:
+    """Subshell depth before each character: ``(`` ... ``)`` and ``$(`` ... ``)``."""
+    depths, d = [], 0
+    for ch in text:
+        depths.append(d)
+        if ch == "(":
+            d += 1
+        elif ch == ")":
+            d = max(d - 1, 0)
+    depths.append(d)
+    return depths
+
+
+def _cd_reaches(depths: list[int], cd: int, at: int) -> bool:
+    """True when a ``cd`` at offset ``cd`` is still in effect at ``at``: it comes first and
+    no subshell it is in has closed in between (``(cd /tmp && make); echo > a.py``)."""
+    return cd < at and min(depths[cd : at + 1]) >= depths[cd]
+
+
+def _looks_absolute(path: str) -> bool:
+    return bool(re.match(r"^(?:[/\\~]|[A-Za-z]:[\\/])", path))
+
+
+# `patch --version`, `git apply --check`: they print, and change no file (unless `--apply`).
+_NO_WRITE_FLAGS = frozenset(
+    ["--version", "--help", "--check", "--stat", "--numstat", "--summary", "--dry-run"]
+    + ["--show-current-patch"]
 )
 
 
@@ -816,12 +917,15 @@ def shell_writes(command: str, powershell: bool = False) -> list[str | None]:
         if view.raw:
             continue
         text = _QUOTE_CHARS.sub("", view.masked)
+        moves = [c for c in _CD.finditer(text) if not _in_child_shell(text, c)]
+        depth = _paren_depths(text)
         for m in _REDIRECT.finditer(text):
             target = m.group(1)
             if target.lower() not in _NULL_TARGETS and not target.startswith("$"):
-                out.append(target)
+                before = [c for c in moves if _cd_reaches(depth, c.start(), m.start())]
+                out.append(_after_cd(target, _cwd_at(before)))
     for words in simple_commands(command, powershell):
-        for cand in _candidates(words):
+        for cand in candidates(words):
             prog, args = cand[0].lower(), cand[1:]
             line = " ".join(cand)
             if prog == "tee":
@@ -839,7 +943,9 @@ def shell_writes(command: str, powershell: bool = False) -> list[str | None]:
                 files = operands if script_flag else operands[1:]
                 out.extend([f for f in files if f.strip()] or [None])
             elif re.match(r"^(?:git (?:apply|am|restore|checkout --)|patch)\b", line):
-                out.append(None)
+                # `git apply --stat --apply` prints the stat and applies the patch.
+                if "--apply" in args or not _NO_WRITE_FLAGS.intersection(args):
+                    out.append(None)
             elif "--check" in args or "--diff" in args:
                 continue
             elif "--fix" in args or "--write" in args or _FORMAT_WRITES.match(line):
