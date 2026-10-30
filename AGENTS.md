@@ -40,3 +40,30 @@ are the checks; `ruleproof.toml` holds the rest.
 - Add a line to `CHANGELOG.md` under `## [Unreleased]` for user-visible changes.
 - Do not commit or push unless asked.
   <!-- ruleproof: forbid-command id=no-push severity=warning command="\bgit\s+push\b" -->
+
+## Status and next steps
+
+Updated: 2026-10-30 (0.1.1 prepared on a branch; the `v0.1.1` tag is not created yet).
+
+Done:
+- 0.1.0 released (GitHub only, installed from the git tag). 0.1.1 collects the unreleased
+  `claims` fixes, the pressure benchmark (`pt1`) and the offline claims evaluation.
+- Benchmarks `base1`, `p2`, `p3`, `pt1` and `claims-eval` are committed under `bench/results/`;
+  every number in the README traces to one of them (the claims-eval "before" column to
+  `results-e33dc0f.md`).
+
+Known limitations (stated in the README):
+- The `claims` check does not yet work as a verifier. Against the pressure benchmark's judge
+  it scored precision 0/12 and recall 0/8, and later fixes were checked only in-sample (the
+  `pt1` transcripts are not kept, so it cannot be re-scored). On overclaim's held-out study it
+  finds 89% of claims but catches 0 of 22 false completions; most of those had a passing test
+  run, which a command-based check cannot see.
+- All benchmark grading is by ruleproof or a Claude judge; no human labels. One small repo.
+
+Open:
+- Create the `v0.1.1` tag; the install pins in README and docs point at it.
+- Dependabot PR #4 (ruff 0.16.10 -> 0.17.2) is open; diff the release notes before merging.
+- Stale remote branches (`claude/*`, `upgrades-2026-10-23`) can be deleted once confirmed merged.
+- Re-run the pressure benchmark with transcripts kept, so `claims` fixes can be scored out of
+  sample; see the open questions in the README.
+- Gemini CLI parsing is untested on real sessions.

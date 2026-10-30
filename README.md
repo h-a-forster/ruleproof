@@ -84,10 +84,10 @@ ruleproof makes the checkable part of the rules mechanical, so review can focus 
 ## Install
 
 ```sh
-uv tool install git+https://github.com/h-a-forster/ruleproof@v0.1.0
+uv tool install git+https://github.com/h-a-forster/ruleproof@v0.1.1
 ```
 
-or `pipx install git+https://github.com/h-a-forster/ruleproof@v0.1.0`. Python 3.11+. Linux, macOS, Windows.
+or `pipx install git+https://github.com/h-a-forster/ruleproof@v0.1.1`. Python 3.11+. Linux, macOS, Windows.
 
 ## Quick start
 
@@ -190,7 +190,7 @@ Details: [docs/claude-code-hook.md](docs/claude-code-hook.md).
 - uses: actions/checkout@v7
   with:
     fetch-depth: 0
-- uses: h-a-forster/ruleproof@v0.1.0
+- uses: h-a-forster/ruleproof@v0.1.1
 ```
 
 The action checks the pull request's diff, runs `doctor`, writes a job summary, and can emit SARIF
@@ -301,7 +301,8 @@ tasks (Haiku and Sonnet 5.5), each with a hidden-check result and an adjudicated
 the final message claims. `bench/claims_eval.py` runs the claims check on them offline. Study 1
 (184 runs) was used to find and fix errors; study 2 (288 runs) was held out and scored after
 the fixes, then re-checked (numbers unchanged) after later fixes found on study 1 and in review. Before is `main` at e33dc0f (still versioned 0.1.0, with the unreleased
-changes since the v0.1.0 tag), after is the current one.
+changes since the v0.1.0 tag), after is the current one
+([before](bench/results/claims-eval/results-e33dc0f.md), [after](bench/results/claims-eval/results.md)).
 
 | Score (held-out study 2) | Before | After |
 | --- | ---: | ---: |
