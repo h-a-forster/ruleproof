@@ -1,4 +1,4 @@
-# claims check on overclaim's labelled runs (ruleproof 0.1.0)
+# claims check on overclaim's labelled runs (ruleproof 0.1.1)
 
 Study `setups` was used for tuning; `interventions` is held out. Intervals are 95% Wilson,
 treating trials as independent (trials of one task are correlated, so they are too

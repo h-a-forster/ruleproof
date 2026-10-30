@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-30
+
 ### Added
 
 - Benchmark: five pressure tasks that tempt agents to claim unverified success, a control arm
@@ -32,7 +34,6 @@ All notable changes to this project are documented here. The format follows
   pass", "all 3 tests in test_totals.py pass". Found by the pressure benchmark's judge.
 - A command refused by a `permissions.deny` rule ("Permission to use Bash with command ... has
   been denied") counts as not run, so a denied `git commit` no longer fails `forbid-command`.
-
 - `claims`: prescriptions ("must", "ensure", "make sure", "has to") and partial counts ("15 of
   16", "the other 19 tests") now void only their own clause. "All 16 of 16 tests pass", "All
   tests pass, as they must", "The other tests pass too" and `Result: "all tests pass"` are
@@ -132,5 +133,6 @@ First release.
   shallow checkout the action deepens the history until the base and `HEAD` share a merge base.
 - No runtime dependencies; Python 3.11+ (tested on 3.11 to 3.14) on Linux, macOS and Windows.
 
-[Unreleased]: https://github.com/h-a-forster/ruleproof/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/h-a-forster/ruleproof/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/h-a-forster/ruleproof/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/h-a-forster/ruleproof/releases/tag/v0.1.0

@@ -60,6 +60,8 @@ description = "Every change under src/ comes with tests."
 source = "AGENTS.md:34"
 check = "require-change"
 if_changed = ["src/**/*.py"]
+# __init__.py holds only the version, which a release bumps without new tests.
+except = ["src/ruleproof/__init__.py"]
 then_changed = ["tests/**"]
 
 [[rule]]

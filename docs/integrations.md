@@ -11,7 +11,7 @@ Add to `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/h-a-forster/ruleproof
-    rev: v0.1.0
+    rev: v0.1.1
     hooks:
       - id: ruleproof-diff
       - id: ruleproof-doctor

@@ -1,5 +1,5 @@
 {
-  "ruleproof": "0.1.0",
+  "ruleproof": "0.1.1",
   "detector_claims": [
     "tests",
     "works",

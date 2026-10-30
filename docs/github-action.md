@@ -20,7 +20,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: h-a-forster/ruleproof@v0.1.0
+      - uses: h-a-forster/ruleproof@v0.1.1
 ```
 
 Use `fetch-depth: 0`. The action diffs the checked-out tree against the merge base of the base
@@ -42,7 +42,7 @@ Transcript rules are skipped unless you pass `transcript`: a CI run has no local
 | `strict` | `false` | `true` counts `unverified` results as failures. |
 | `doctor` | `true` | Also run `ruleproof doctor`. Its findings use the same `fail-on`. |
 | `sarif` | none | Also write a SARIF report to this path. |
-| `version` | empty (install from the action's checkout) | ruleproof release to install from its git tag, e.g. `0.1.0`. Empty installs the code at the ref in `uses:`. |
+| `version` | empty (install from the action's checkout) | ruleproof release to install from its git tag, e.g. `0.1.1`. Empty installs the code at the ref in `uses:`. |
 | `python-version` | `3.13` | Python used to run ruleproof (3.11+). |
 | `working-directory` | `.` | Repository to check. `rules`, `transcript` and `sarif` paths are relative to it. |
 
@@ -78,7 +78,7 @@ When rules fail, the job fails with
           fetch-depth: 0
           persist-credentials: false
       - id: ruleproof
-        uses: h-a-forster/ruleproof@v0.1.0
+        uses: h-a-forster/ruleproof@v0.1.1
         with:
           sarif: ${{ runner.temp }}/ruleproof.sarif
       - if: always() && steps.ruleproof.outputs.report != ''
@@ -117,7 +117,7 @@ to stream-json (one message per line) before passing it to ruleproof:
         run: jq -c '.[]' "$EXECUTION_FILE" > "$RUNNER_TEMP/claude-transcript.jsonl"
 
       - if: always() && steps.claude.outputs.execution_file != ''
-        uses: h-a-forster/ruleproof@v0.1.0
+        uses: h-a-forster/ruleproof@v0.1.1
         with:
           base: ${{ steps.start.outputs.sha }}
           transcript: ${{ runner.temp }}/claude-transcript.jsonl
@@ -143,5 +143,5 @@ For Codex, use `codex exec --json > transcript.jsonl`.
 
 ## Pinning
 
-`uses: h-a-forster/ruleproof@v0.1.0` pins a release. For a stronger pin, use the release's commit
+`uses: h-a-forster/ruleproof@v0.1.1` pins a release. For a stronger pin, use the release's commit
 SHA and let Dependabot (`package-ecosystem: github-actions`) update it.
