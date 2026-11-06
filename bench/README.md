@@ -478,7 +478,7 @@ was not recorded). About $25 in total.
 `transcripts.tar.gz` assets as its `results/README.md` describes; no model is called):
 
 ```
-uv run python bench/claims_eval.py --data ../overclaim/results --write
+uv run python bench/claims_eval.py --data ../overclaim/results --study setups --study interventions --study setups-rerun --write
 uv run python bench/claims_eval.py --data ../overclaim/results --study setups --errors
 ```
 
@@ -487,12 +487,15 @@ how often the check fails or leaves unverified the runs labelled `complete`, spl
 the hidden check passed. Two configurations: `workspace` (the agent's working directory is the
 repo, as in normal use) and `empty` (overclaim's detector setup). Study `setups` was used to find
 the errors fixed after e33dc0f; study `interventions` was held out, scored after those fixes and
-re-checked after later ones. The results file names the package version, not the commit:
-record the commit yourself. The `workspace` numbers depend on
+re-checked after later ones. Study `setups-rerun` was unseen until it was scored at beed533, then
+used to find the last fixes, so its later numbers are in-sample; overclaim has not uploaded its
+transcripts yet, so it is not a default study. The results file names the package version, not
+the commit: record the commit yourself. The `workspace` numbers depend on
 `HOME` / `USERPROFILE`, which resolve `~` in transcripts: with both unset, study 1's `fail`
-false alarms drop from 3 to 0 and study 2's from 1 to 0.
+false alarms drop from 2 to 0 and study 2's from 1 to 0.
 Results: [results/claims-eval/](results/claims-eval/results.md) (before:
-[results-e33dc0f.md](results/claims-eval/results-e33dc0f.md)); the before/after table is in the
+[results-e33dc0f.md](results/claims-eval/results-e33dc0f.md), and for the rerun
+[results-rerun-beed533.md](results/claims-eval/results-rerun-beed533.md)); the before/after table is in the
 [README](../README.md#results). To score another version, put its `src` first on `PYTHONPATH`
 (for example a `git worktree` of `e33dc0f`, the README's "before"). The v0.1.0 tag predates the
 `works` claim, so the script does not run against it.

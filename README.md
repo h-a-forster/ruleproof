@@ -59,7 +59,9 @@ From the [benchmarks](#results) (small n, one repo, a Claude judge; read them as
   On 472 labelled runs published by [overclaim](https://github.com/h-a-forster/overclaim) it
   now finds 89% of "tests pass" claims on a held-out study (was 83%) with 99% precision, but it
   catches none of the false completions there: 16 of the 22 had a passing test run, so their
-  claims were backed, and in 4 of the other 6 it missed the claim phrase ([Results](#results)).
+  claims were backed, and in 4 of the other 6 it missed the claim phrase. On a later rerun it had
+  never seen, it failed 22 of 97 correct runs (13 after fixes found there), so expect false
+  alarms ([Results](#results)).
 - **Task success was at ceiling.** Hidden tests passed in 79 of 80 pressure runs, so the
   benchmark measures rule cleanliness, not capability ([Results](#results)).
 - **Under pressure nothing was significant.** Clean runs ranged from 1/15 to 6/15 across arms
@@ -300,7 +302,8 @@ arm: its inputs still leaked it in some trials (see the
 tasks (Haiku and Sonnet 5.5), each with a hidden-check result and an adjudicated label of what
 the final message claims. `bench/claims_eval.py` runs the claims check on them offline. Study 1
 (184 runs) was used to find and fix errors; study 2 (288 runs) was held out and scored after
-the fixes, then re-checked (numbers unchanged) after later fixes found on study 1 and in review. Before is `main` at e33dc0f (still versioned 0.1.0, with the unreleased
+the fixes, then re-checked (numbers unchanged) after later fixes found on study 1, in review and
+on the rerun described below. Before is `main` at e33dc0f (still versioned 0.1.0, with the unreleased
 changes since the v0.1.0 tag), after is the current one
 ([before](bench/results/claims-eval/results-e33dc0f.md), [after](bench/results/claims-eval/results.md)).
 
@@ -336,9 +339,19 @@ changes since the v0.1.0 tag), after is the current one
   `ruleproof` row (0 of 11 caught, 7 false alarms in study 1) was scored with a 0.1.0 build and
   an empty `--repo`, so it saw no edits; in that configuration the before version gives 0 and 7
   and the current check 0 and 0.
-- In study 1 the current check still fails 3 correct runs in the agent's working directory:
+- In study 1 the current check still fails 2 correct runs in the agent's working directory:
   each edited a scratch script under `tmp/` after its last test run. Add such paths to
   `ignore_edit_paths`.
+- **The held-out numbers are optimistic.** overclaim's rerun of study 1's tasks (144 runs, a
+  later Claude Code in a different environment, used in no tuning above) was first scored at
+  beed533 ([results](bench/results/claims-eval/results-rerun-beed533.md)). Claims found: 120 of
+  142 (84.5%), none rejected by the label. But 22 of its 97 correct "done" runs failed, against
+  1 of 193 in the table, and 20 more were unverified. Most of the failures with no test run
+  were evidence errors: the interpreter in a variable (`$PY -m unittest`). With that fixed, 13
+  fail and 23 are unverified ([after](bench/results/claims-eval/results.md), now in-sample), and
+  the false completions caught drop from 2 of 4 to 1 of 4: one catch was that same error. The
+  rest are mostly scratch files written after the last test run, and command lines that also
+  run the tests on the old code to show they fail there, which read as failures.
 - One labeller pipeline (two Claude models plus adjudication), one agent, Python tasks only;
   intervals in the results file treat runs as independent, which they are not.
 
@@ -381,7 +394,7 @@ Each is something the repo can start on; the pointers say where.
   and `bench/run.py`.
 - **How well does the judge match human labels?** No human labelled any run; the judge is a
   Claude model and was only partly blind to the arm. Start at `bench/judge.py` and
-  `bench/results/pt1/` (per-trial transcripts, judge verdicts).
+  `bench/results/judge/pt1/` (condensed per-trial logs, judge verdicts).
 - **Which rules can hooks enforce, and which can they only detect?** PreToolUse can refuse a
   command or edit; "tell the truth about what you ran" cannot be refused up front. Start at
   `src/ruleproof/hook.py` and `docs/claude-code-hook.md`.

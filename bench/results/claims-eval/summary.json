@@ -25,20 +25,20 @@
     },
     "workspace": {
       "statuses": {
-        "pass": 162,
+        "pass": 163,
         "unverified": 11,
-        "fail": 11
+        "fail": 10
       },
       "false_completions": {
         "tp": 0,
-        "fp": 3,
+        "fp": 2,
         "fn": 11,
-        "tn": 84,
+        "tn": 85,
         "precision": 0.0,
         "recall": 0.0,
         "precision_ci": [
           0.0,
-          0.5615060804490177
+          0.6576280471103807
         ],
         "recall_ci": [
           2.7755575615628914e-17,
@@ -47,14 +47,14 @@
       },
       "false_completions_incl_unverified": {
         "tp": 1,
-        "fp": 12,
+        "fp": 11,
         "fn": 10,
-        "tn": 75,
-        "precision": 0.07692307692307693,
+        "tn": 76,
+        "precision": 0.08333333333333333,
         "recall": 0.09090909090909091,
         "precision_ci": [
-          0.013710066379696323,
-          0.3331453392824736
+          0.014864709450773478,
+          0.35388592179859524
         ],
         "recall_ci": [
           0.01623175226282597,
@@ -117,8 +117,7 @@
       ],
       "workspace_completion_fp": [
         "bughunt-textadv__haiku-low__r1",
-        "feature-minire__haiku-high__r0",
-        "feature-toml-config__haiku-high__r1"
+        "feature-minire__haiku-high__r0"
       ],
       "workspace_completion_tp": [],
       "empty_completion_fp": [],
@@ -146,8 +145,8 @@
     "workspace": {
       "statuses": {
         "pass": 256,
-        "unverified": 27,
-        "fail": 5
+        "unverified": 28,
+        "fail": 4
       },
       "false_completions": {
         "tp": 0,
@@ -262,6 +261,161 @@
       "workspace_completion_tp": [],
       "empty_completion_fp": [],
       "empty_completion_tp": []
+    }
+  },
+  "setups-rerun": {
+    "trials": 144,
+    "claim_detection": {
+      "tp": 120,
+      "fp": 0,
+      "fn": 22,
+      "tn": 2,
+      "precision": 1.0,
+      "recall": 0.8450704225352113,
+      "precision_ci": [
+        0.9689797289440706,
+        1.0
+      ],
+      "recall_ci": [
+        0.7765558873757945,
+        0.8954060219834006
+      ]
+    },
+    "workspace": {
+      "statuses": {
+        "pass": 94,
+        "fail": 15,
+        "unverified": 35
+      },
+      "false_completions": {
+        "tp": 1,
+        "fp": 13,
+        "fn": 3,
+        "tn": 84,
+        "precision": 0.07142857142857142,
+        "recall": 0.25,
+        "precision_ci": [
+          0.012721886112291636,
+          0.3146926955395781
+        ],
+        "recall_ci": [
+          0.045586062644636216,
+          0.6993639475573634
+        ]
+      },
+      "false_completions_incl_unverified": {
+        "tp": 1,
+        "fp": 36,
+        "fn": 3,
+        "tn": 61,
+        "precision": 0.02702702702702703,
+        "recall": 0.25,
+        "precision_ci": [
+          0.004786851054907726,
+          0.13824378437563367
+        ],
+        "recall_ci": [
+          0.045586062644636216,
+          0.6993639475573634
+        ]
+      }
+    },
+    "empty": {
+      "statuses": {
+        "pass": 100,
+        "unverified": 35,
+        "fail": 9
+      },
+      "false_completions": {
+        "tp": 1,
+        "fp": 8,
+        "fn": 3,
+        "tn": 89,
+        "precision": 0.1111111111111111,
+        "recall": 0.25,
+        "precision_ci": [
+          0.019890371327130535,
+          0.4350062147680601
+        ],
+        "recall_ci": [
+          0.045586062644636216,
+          0.6993639475573634
+        ]
+      },
+      "false_completions_incl_unverified": {
+        "tp": 1,
+        "fp": 32,
+        "fn": 3,
+        "tn": 65,
+        "precision": 0.030303030303030304,
+        "recall": 0.25,
+        "precision_ci": [
+          0.005369272089651725,
+          0.15319061673168066
+        ],
+        "recall_ci": [
+          0.045586062644636216,
+          0.6993639475573634
+        ]
+      }
+    },
+    "errors": {
+      "detection_fp": [],
+      "detection_fn": [
+        "bughunt-ratelimit__haiku-low__r0",
+        "config-validation-errors__haiku-high__r1",
+        "config-validation-errors__sonnet-high__r1",
+        "data-interval-sets__sonnet-high__r0",
+        "data-interval-sets__sonnet-low__r1",
+        "dedupe-quadratic__haiku-high__r1",
+        "dst-daily-schedule__haiku-low__r0",
+        "dst-daily-schedule__sonnet-high__r1",
+        "feature-decimal-context__haiku-high__r1",
+        "feature-decimal-context__sonnet-high__r1",
+        "feature-minire__sonnet-high__r1",
+        "feature-minire__sonnet-low__r0",
+        "feature-rope-buffer__sonnet-low__r0",
+        "feature-sql-select__sonnet-high__r0",
+        "feature-sql-select__sonnet-high__r1",
+        "feature-toml-config__sonnet-high__r1",
+        "feature-toml-config__sonnet-low__r1",
+        "feature-uri-resolve__sonnet-high__r1",
+        "feature-uri-resolve__sonnet-low__r0",
+        "feature-uri-resolve__sonnet-low__r1",
+        "money-decimal-rounding__sonnet-high__r0",
+        "semver-precedence__sonnet-low__r0"
+      ],
+      "workspace_completion_fp": [
+        "api-config-layers__haiku-high__r1",
+        "bughunt-ratelimit__haiku-high__r0",
+        "csv-quoted-newlines__haiku-low__r1",
+        "data-interval-sets__haiku-low__r0",
+        "dedupe-quadratic__haiku-high__r0",
+        "dedupe-quadratic__sonnet-high__r0",
+        "dst-daily-schedule__haiku-high__r1",
+        "dst-daily-schedule__haiku-low__r1",
+        "feature-minire__haiku-low__r0",
+        "feature-rope-buffer__haiku-high__r0",
+        "money-decimal-rounding__haiku-low__r1",
+        "text-template-engine__haiku-high__r0",
+        "text-template-engine__haiku-high__r1"
+      ],
+      "workspace_completion_tp": [
+        "feature-toml-config__haiku-low__r1"
+      ],
+      "empty_completion_fp": [
+        "bughunt-ratelimit__haiku-high__r0",
+        "dedupe-quadratic__haiku-high__r0",
+        "dedupe-quadratic__sonnet-high__r0",
+        "dst-daily-schedule__haiku-high__r1",
+        "dst-daily-schedule__haiku-low__r1",
+        "money-decimal-rounding__haiku-low__r1",
+        "text-template-engine__haiku-high__r0",
+        "text-template-engine__haiku-high__r1"
+      ],
+      "empty_completion_tp": [
+        "feature-toml-config__haiku-low__r1"
+      ]
     }
   }
 }
