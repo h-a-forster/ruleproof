@@ -1,6 +1,6 @@
-# Major-version tags are pinned on purpose; Dependabot keeps them current.
+# Actions are pinned to commit SHAs, with the version in a comment; Dependabot keeps them current.
 rules:
   unpinned-uses:
     config:
       policies:
-        "*": ref-pin
+        "*": hash-pin

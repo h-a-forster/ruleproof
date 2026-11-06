@@ -52,6 +52,7 @@ include = [
     "/tests",
     "/docs",
     "/examples",
+    "/bench/claims_eval.py",
     "/README.md",
     "/LICENSE",
     "/CHANGELOG.md",
