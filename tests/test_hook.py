@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -614,3 +615,30 @@ def test_pretool_unknown_base_falls_back_to_disk(git_repo: Path) -> None:
     }
     hook.claude_pretool(io.StringIO(json.dumps(data)), out, io.StringIO(), env={}, base="nope")
     assert "no-editing-existing-tests" in out.getvalue()  # exists on disk: a modify
+
+
+def test_hook_reads_payload_as_utf8_in_any_locale(tmp_path: Path) -> None:
+    # Claude Code writes UTF-8; Windows' default stdin decoding (cp1252) mangled the cwd, so the
+    # hook found no repo and let every call through.
+    repo = tmp_path / "caf\u00dd"
+    repo.mkdir()
+    (repo / "ruleproof.toml").write_text(
+        'version = 1\n[[rule]]\nid = "no-push"\ncheck = "forbid-command"\ncommand = "git push"\n',
+        encoding="utf-8",
+    )
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "cwd": str(repo),
+        "tool_name": "Bash",
+        "tool_input": {"command": "git push"},
+    }
+    proc = subprocess.run(
+        [sys.executable, "-m", "ruleproof", "hook", "claude-pretool"],
+        input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        capture_output=True,
+        env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+        timeout=60,
+        check=True,
+    )
+    assert proc.stdout, proc.stderr.decode("utf-8", "replace")
+    assert json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"

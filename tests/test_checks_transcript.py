@@ -167,6 +167,7 @@ def test_command_texts_short_quoted_words_unquoted() -> None:
         ("===== 1 failed, 11 passed in 0.31s =====", False),
         ("===== 2 errors in 0.31s =====", False),
         ("collected 0 items\n===== no tests ran in 0.01s =====", False),
+        ("Ran 0 tests in 0.000s\n\nOK", False),
         ("0 passed in 0.01s", None),
         ("3 passed in 0.1s\nFAIL Required test coverage of 80% not reached.", False),
         ("tests/test_a.py::test_x FAILED\n3 passed in 0.1s", False),
@@ -176,6 +177,12 @@ def test_command_texts_short_quoted_words_unquoted() -> None:
         ("Ran 5 tests in 0.002s\n\nOK", True),
         ("Ran 5 tests in 0.002s\n\nOK (skipped=1)", True),
         ("Ran 5 tests in 0.002s\n\nFAILED (failures=1)", False),
+        ("ERROR: test_x (tests.test_a.T.test_x)\nRan 1 test in 0.1s\n\nFAILED (errors=1)", False),
+        ("ERROR: tests.test_a (unittest.loader._FailedTest.tests.test_a)\nImportError", False),
+        ("ERROR tests/test_a.py - ImportError\n!!! Interrupted: 1 error during collection", False),
+        ("ERROR tests/test_a.py::test_x - KeyError", False),
+        ("ERROR:root:connection refused\nRan 5 tests in 0.002s\n\nOK", True),
+        ("ERROR something the code under test logged\n3 passed in 0.1s", True),
         ("Tests:       1 failed, 4 passed, 5 total", False),
         ("Tests:       5 passed, 5 total", True),
         (" Test Files  1 passed (1)\n      Tests  3 passed (3)", True),
@@ -450,9 +457,11 @@ DENIED = (
     "it was a file edit, the new_string was NOT written to the file)."
 )
 BLOCKED = "PreToolUse:Bash hook error: [guard]: git push is blocked"
+SAFETY_CHECK = "Permission for this command was denied by a built-in Claude Code safety check."
+HARNESS_BLOCK = "<tool_use_error>Blocked: sleep 30 followed by: cat out.log</tool_use_error>"
 
 
-@pytest.mark.parametrize("output", [DENIED, BLOCKED])
+@pytest.mark.parametrize("output", [DENIED, BLOCKED, SAFETY_CHECK, HARNESS_BLOCK])
 def test_denied_or_blocked_commands_did_not_run(output: str) -> None:
     s = session(cmd("git push origin main", None, output, is_error=True))
     assert run(make_rule("forbid-command", command=r"git\s+push"), s).status == "pass"
@@ -535,6 +544,23 @@ def test_require_command_uses_powershell_quoting_from_tool() -> None:
         ("pytest -h", False),
         ("echo done > /tmp/pytest.log", False),
         ('git commit -m "run pytest"', False),
+        ("$PY -m pytest", True),
+        ('"$PY" -I -m pytest -q', True),
+        ("& $py -m pytest", True),
+        ("env -u PYTHONHOME $PY -m pytest", True),
+        ("$PY -m pip install pytest", False),
+        ("$PY -c 'import pytest'", False),
+        ("$EDITOR pytest.ini", False),
+        ("coverage run -m pytest", True),
+        ("uv run coverage run --source src -m pytest", True),
+        ("python -m coverage run --branch -m pytest", True),
+        ("coverage report", False),
+        ("coverage run scripts/seed.py", False),
+        ("if pytest; then echo ok; fi", True),
+        ("if true; then pytest; else jest; fi", True),
+        ("for f in a b; do pytest $f; done", True),
+        ("while ! pytest; do sleep 1; done", True),
+        ("! pytest", True),
     ],
 )
 def test_invokes_requires_command_position(command: str, expected: bool) -> None:

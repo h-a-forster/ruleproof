@@ -129,6 +129,9 @@ def test_codex_shell_is_powershell_only_on_windows() -> None:
         "bash scripts/test.sh",
         r".\scripts\run-tests.ps1",
         "bazel test //...",
+        "PY=.venv/bin/python; $PY -m unittest discover -s tests -t .",
+        "$py = 'C:\\Py\\python.exe'; & $py -m unittest",
+        "coverage run -m pytest",
     ],
 )
 def test_more_test_runners(command: str) -> None:

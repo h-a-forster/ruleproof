@@ -88,7 +88,8 @@ def globs_match(path: str, patterns: Iterable[str] | None, scope: str | None = N
 _DENIED = re.compile(
     r"doesn't want to proceed|tool use was rejected|rejected by (?:the )?user"
     r"|requested permissions? to use|haven't granted it"
-    r"|permission to use \w+(?: with command [\s\S]*?)? (?:has been|was) denied"
+    r"|permission (?:to use \w+(?: with command [\s\S]*?)?|for this command)"
+    r" (?:has been|was) denied|<tool_use_error>blocked:"
     r"|\bhook (?:error|blocked)|blocked by (?:a |the )?(?:\w+ )?hook|PreToolUse:\w+ hook"
     r"|user (?:denied|declined)|was (?:denied|cancelled|canceled) by the user",
     re.IGNORECASE,
@@ -579,6 +580,7 @@ _ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
 _PREFIX_1 = frozenset(
     ["npx", "bunx", "pnpx", "uvx", "sudo", "doas", "env", "time", "nice", "nohup", "command"]
     + ["exec", "xvfb-run", "stdbuf", "timeout", "pnpm", "yarn", "bun"]
+    + ["if", "then", "elif", "else", "do", "while", "until", "!"]  # shell keywords
 )
 _PREFIX_2 = frozenset(
     tuple(p.split())
@@ -608,7 +610,8 @@ _PREFIX_VALUE_OPTIONS = frozenset(
     + ["--chdir", "-s", "--signal", "-k", "--kill-after"]
 )
 _PYTHON = re.compile(r"^(?:python[\d.]*|py)$")
-_PYTHON_VALUE_OPTIONS = frozenset(["-X", "-W", "--check-hash-based-pycs"])
+_VARIABLE = re.compile(r"^\$\w+$")  # `$PY -m pytest`: an interpreter held in a variable
+_PYTHON_VALUE_OPTIONS = frozenset(["-X", "-W", "--check-hash-based-pycs", "--source", "--rcfile"])
 _NOT_A_RUN = frozenset(["--version", "-V", "--help", "-h", "--collect-only", "--co"])
 
 
@@ -663,9 +666,12 @@ def candidates(words: list[str]) -> Iterable[list[str]]:
         yield [_program(words[pos]), *words[pos + 1 :]]
         prog = _program(words[pos]).lower()
         nxt = words[pos + 1] if pos + 1 < len(words) else ""
+        if (prog, nxt) == ("coverage", "run"):
+            pos += 1
+            prog = "python"  # runs a module or script as the interpreter does
         if (prog, nxt) in _PREFIX_2:
             pos += 2
-        elif _PYTHON.match(prog):
+        elif _PYTHON.match(prog) or _VARIABLE.match(words[pos]):
             # `python -X utf8 -m unittest`, `py -3 -m pytest`, `python manage.py test`
             j = pos + 1
             while j < len(words) and words[j].startswith("-") and words[j] not in ("-m", "-c"):
@@ -985,8 +991,9 @@ _M = re.MULTILINE
 # (``ruff check . && ruff format --check .``) can be attributed (see ``output_verdict``).
 _FAILURE: list[tuple[str, re.Pattern[str]]] = [
     ("tests", re.compile(r"^.*\b[1-9]\d* (?:failed|errors?)\b.* in [\d.]+s\b", _M)),  # pytest
-    ("tests", re.compile(r"\bno tests ran\b")),  # pytest: nothing collected
-    ("tests", re.compile(r"^(?:FAILED|ERROR)\b", _M)),  # pytest short summary, unittest
+    ("tests", re.compile(r"\bno tests ran\b|^Ran 0 tests in\b", _M)),  # nothing collected
+    # pytest's short summary and unittest; not a log line (`ERROR:root:...`) from the tests.
+    ("tests", re.compile(r"^FAILED\b|^ERROR \S+(?:\.py\b|::)|^ERROR: \S+ \(", _M)),
     ("tests", re.compile(r"^\S+::\S+ (?:FAILED|ERROR)\b", _M)),  # pytest -v
     ("tests", re.compile(r"Required test coverage of .* not reached|\bless than fail-under=", _M)),
     ("tests", re.compile(r"^\s*Tests?:?\s+.*\b[1-9]\d* failed\b", _M)),  # jest / vitest

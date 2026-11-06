@@ -40,7 +40,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(argv)
     except SystemExit as exc:  # --help, --version, or a usage error
         return exc.code if isinstance(exc.code, int) else EXIT_USAGE
-    _make_stdout_lossless()
+    _make_streams_lossless()
     handler: Callable[[argparse.Namespace], int] = args.handler
     try:
         return handler(args)
@@ -559,13 +559,13 @@ def _write_stdout(text: str) -> None:
     sys.stdout.flush()
 
 
-def _make_stdout_lossless() -> None:
+def _make_streams_lossless() -> None:
     """Never crash on characters the stream encoding (e.g. cp1252) cannot represent.
 
-    Redirected output is written as UTF-8 so JSON and timelines survive a pipe on Windows,
-    where Python otherwise uses the ANSI code page.
+    Piped input and redirected output are UTF-8 so hook payloads, patches, JSON and timelines
+    survive a pipe on Windows, where Python otherwise uses the ANSI code page.
     """
-    for stream in (sys.stdout, sys.stderr):
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         if not isinstance(stream, io.TextIOWrapper):
             continue
         if stream.isatty():
