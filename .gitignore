@@ -11,3 +11,4 @@ build/
 htmlcov/
 tmp/
 bench/workspaces/
+backlog.md
