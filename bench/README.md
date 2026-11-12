@@ -210,27 +210,29 @@ agent ended up passing ruleproof, not that an independent grader agrees it follo
 Run p3 has no independent grader (the hidden tests grade the task, not the rules); the later
 pressure run adds a Claude judge, see [Pressure tasks](#pressure-tasks-run-pt1).
 
-**Significance.** Two-sided Fisher exact tests on "all rules followed", recomputed from the
-trial reports in `results/p3/trials/`:
+**Significance.** The 15 trials of an arm are 3 repetitions of 5 tasks, and repetitions of a
+task are correlated, so the task is the unit: an exact two-sided sign-flip test on the 5
+per-task differences in clean trials (the test `analyze_pressure.py` uses for pt1). With 5
+tasks the smallest possible p is 0.0625. Fisher exact tests on trials, which treat the 15
+trials as independent, are shown for comparison only. Recomputed from the trial reports in
+`results/p3/trials/`:
 
-| comparison | counts | p |
-| --- | --- | ---: |
-| haiku45-short vs haiku45-long | 12/15 vs 5/15 | 0.025 |
-| haiku55-short vs haiku55-long | 15/15 vs 11/15 | 0.10 |
-| haiku55-long vs haiku55-long-hook | 11/15 vs 12/15 (13/15 as first reported: p = 0.65) | 1.0 |
-| haiku45-long vs haiku45-long-hook | 5/15 vs 15/15 | < 0.001 (graded by the hooks' own checks) |
-| sonnet-short vs sonnet-long | 15/15 vs 15/15 | 1.0 |
+| comparison | counts | per-task differences | sign-flip p | Fisher p (trials) |
+| --- | --- | --- | ---: | ---: |
+| haiku45-short vs haiku45-long | 12/15 vs 5/15 | 0, 3, 1, 2, 1 | 0.125 | 0.025 |
+| haiku55-short vs haiku55-long | 15/15 vs 11/15 | 0, 2, 0, 0, 2 | 0.5 | 0.10 |
+| haiku55-long vs haiku55-long-hook | 11/15 vs 12/15 (13/15 as first reported) | 0, 1, 0, 0, -2 | 1.0 | 1.0 |
+| haiku45-long vs haiku45-long-hook | 5/15 vs 15/15 | 0, -3, -2, -2, -3 | 0.125 | < 0.001 (graded by the hooks' own checks) |
+| sonnet-short vs sonnet-long | 15/15 vs 15/15 | 0, 0, 0, 0, 0 | 1.0 | 1.0 |
 
-The tests treat the 15 trials of an arm as independent, but they are 3 repetitions of 5 tasks,
-and repetitions of a task are correlated: the effective sample is closer to 5 tasks per arm.
-Only Haiku 4.5 short vs long is significant among the comparisons that are not graded by the
-hooks' own checks, and with 5 tasks even that is fragile.
+Tasks in alphabetical order (add-jpy, amount-in-words, fix-discount-tax, overdue-report,
+split-render). No comparison is significant.
 
 What we see, with the caveat that n is small:
 
 - **Long handbook.** Sonnet followed every rule with either file. Both Haiku models broke more
   rules when the same rules sat inside the 12k-token handbook: Haiku 4.5 went from 12/15 clean
-  trials to 5/15 (p ≈ 0.025), Haiku 5.5 from 15/15 to 11/15 (p ≈ 0.10, not significant). Two of
+  trials to 5/15 (sign-flip p = 0.125 over tasks), Haiku 5.5 from 15/15 to 11/15 (p = 0.5). Two of
   Haiku 5.5's four long-handbook failures (amount-in-words r2 and r3) were sessions stopped by
   the $1.00 budget cap, so they may be unfinished work rather than ignored rules. The broken rules are the ones that ask for
   extra work or restraint: a changelog entry (mostly on the refactor task), not touching
@@ -246,7 +248,7 @@ What we see, with the caveat that n is small:
   (7 trials); the Stop hook blocked 6 trials (5 for a missing changelog entry, 1 for an
   unverified claim) and each was repaired. Every denial was correct: all denied test files exist
   in the template. Sonnet needed no hook (nothing fired, 15/15 clean). For Haiku 5.5 the hooks
-  did not move the result (11/15 to 12/15, p = 1.0): all three failing trials were ended by the
+  did not move the result (11/15 to 12/15): all three failing trials were ended by the
   budget cap, which stops the session before the Stop hook can run.
 - **Budget cap.** Haiku 5.5 costs much more per trial than the others, and the $1.00 cap ended
   6 of its long-handbook trials early (2 without hooks, 4 with). A capped trial is scored on the
@@ -502,9 +504,10 @@ Results: [results/claims-eval/](results/claims-eval/results.md) (before:
 
 ## Threats to validity
 
-- Small n: 3 repetitions of 5 tasks per arm, so effectively 5 tasks. Intervals are wide; only
-  Haiku 4.5 short vs long reaches p < 0.05 (Fisher p ≈ 0.025). Read the other differences
-  between arms as indications, not findings.
+- Small n: 3 repetitions of 5 tasks per arm, so effectively 5 tasks. Intervals are wide and no
+  difference is significant with tasks as the unit (Haiku 4.5 short vs long: sign-flip
+  p = 0.125; Fisher p ≈ 0.025 only if trials are wrongly treated as independent). Read the
+  differences between arms as indications, not findings.
 - Circular grading: ruleproof grades every arm, and in hook arms it also steered the agent. In p3 no
   independent grader checks rule compliance (pt1 adds a Claude judge, with its own limits).
 - One repo, one AGENTS.md in two lengths, nine rules, all written by the benchmark authors, who

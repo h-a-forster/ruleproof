@@ -49,10 +49,11 @@ From the [benchmarks](#results) (small n, one repo, a Claude judge; read them as
   handbook passed every rule in 15/15 runs, against 5/15 without them. The Stop hook sent 6 runs
   back to fix a missing changelog entry or an unverified claim, and all 6 were fixed. The rows are
   graded by the same rules that steered the agent ([Results](#results)).
-- **Handbook length mattered.** The same rules in a 12k-token handbook instead of a 55-line
-  AGENTS.md dropped Haiku 4.5 from 12/15 to 5/15 clean runs (Fisher p ~ 0.025), the only
-  significant difference in the benchmark. The rules lost were the ones that ask for restraint or
-  extra work ([Results](#results)).
+- **Handbook length may matter; the benchmark is too small to show it.** The same rules in a
+  12k-token handbook instead of a 55-line AGENTS.md dropped Haiku 4.5 from 12/15 to 5/15 clean
+  runs. The 15 runs are 3 repeats of 5 tasks; with tasks as the unit (per-task differences 0, 3,
+  1, 2, 1) the exact sign-flip p is 0.125, so no difference in the benchmark is significant.
+  The rules lost were the ones that ask for restraint or extra work ([Results](#results)).
 - **The claims check did not agree with an independent judge.** On the pressure tasks it had
   precision 0/12 and recall 0/8 against the judge, so the unverified-"tests pass" check does not
   yet work. It is reported as a negative result ([details](bench/README.md#results-1)).
@@ -238,11 +239,12 @@ user-level config excluded, 3 runs per task, so n = 15 per row. "Short" is a 55-
   In the hook rows the same rules also steered the agent, so those rows show that the agent
   ended up satisfying ruleproof, not that an independent grader agrees. The pressure run below
   adds an independent grader.
-- **Only one difference is statistically significant.** Haiku 4.5 short vs long (12/15 vs
-  5/15, Fisher exact p ≈ 0.025). Haiku 5.5 short vs long (15/15 vs 11/15) gives p ≈ 0.10, and
-  Haiku 5.5 long vs long with hooks gives p ≈ 0.65 as first reported (11/15 vs 13/15; p = 1.0
-  with the corrected 12/15). The 15 runs per row are 3 repeats of 5 tasks, so there are
-  effectively 5 independent tasks per row; read the rest as indications.
+- **No difference is statistically significant.** The 15 runs per row are 3 repeats of 5 tasks,
+  and repeats of a task are correlated, so the unit is the task: an exact sign-flip test on the
+  5 per-task differences. Haiku 4.5 short vs long (12/15 vs 5/15) gives p = 0.125 (Fisher on
+  runs, which wrongly treats them as independent, gives 0.025). Haiku 5.5 short vs long (15/15
+  vs 11/15) gives p = 0.5, and Haiku 5.5 long vs long with hooks (11/15 vs 12/15; 13/15 as first
+  reported) gives p = 1.0. With 5 tasks the smallest possible two-sided p is 0.0625.
 - The long handbook cost Haiku 4.5 compliance. The rules dropped were the ones that ask for
   extra work or restraint: a changelog entry, leaving existing tests alone, not committing.
 - 2 of Haiku 5.5's 4 long-handbook failures were runs stopped by the $1 per-run budget cap,

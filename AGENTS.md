@@ -43,11 +43,10 @@ are the checks; `ruleproof.toml` holds the rest.
 
 ## Status
 
-Updated: 2026-11-06 (0.1.1 is prepared on a branch; the `v0.1.1` tag does not exist yet). Open
-work lives in `backlog.md`.
+Updated: 2026-11-13. Open work lives in `backlog.md`.
 
 Done:
-- 0.1.0 released (GitHub only, installed from the git tag). 0.1.1 collects the unreleased
+- 0.1.0 and 0.1.1 released (GitHub only, installed from the git tag). 0.1.1 collects the
   `claims` fixes, the pressure benchmark (`pt1`) and the offline claims evaluation.
 - Benchmarks `base1`, `p2`, `p3`, `pt1` and `claims-eval` are committed under `bench/results/`;
   every number in the README traces to one of them (the claims-eval "before" columns to
@@ -60,5 +59,6 @@ Known limitations (stated in the README):
   finds 89% of claims but catches 0 of 22 false completions; most of those had a passing test
   run, which a command-based check cannot see. On overclaim's rerun, unseen when first scored,
   it failed 22 of 97 correct runs (13 after the fixes found there).
-- All benchmark grading is by ruleproof or a Claude judge; no human labels. One small repo.
+- All benchmark grading is by ruleproof or a Claude judge; no human labels. One small repo,
+  5 tasks: with tasks as the unit no arm difference is significant (exact sign-flip test).
 - Gemini CLI parsing is untested on real sessions.
