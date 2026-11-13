@@ -215,7 +215,7 @@ def test_sentences_drop_code_fences_and_backticks() -> None:
         ("tests", "node tests/test_lib.js"),
         ("tests", "python -X utf8 tests/test_mock.py"),
         ("tests", "node src/app.test.js"),
-        ("tests", "claude plugin test clawd"),
+        ("tests", "claude plugin test myplugin"),
         ("lint", "uv run ruff check ."),
         ("lint", "npx eslint src"),
         ("lint", "golangci-lint run"),
