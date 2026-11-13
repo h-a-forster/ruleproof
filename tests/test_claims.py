@@ -230,6 +230,8 @@ def test_sentences_drop_code_fences_and_backticks() -> None:
         ("build", "npm run build"),
         ("build", "cargo build --release"),
         ("build", "go build ./..."),
+        ("build", "pio run -e esp32"),
+        ("build", "~/.platformio/penv/Scripts/pio.exe run"),
         ("build", "dotnet build"),
         ("build", "./gradlew assembleDebug"),
         ("build", "mvn package"),

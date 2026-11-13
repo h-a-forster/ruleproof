@@ -30,8 +30,8 @@ All notable changes to this project are documented here. The format follows
 - `sed -i` and `tee` targets after a `cd` (`cd sub && sed -i ... f.py`) are read in that
   directory, like redirects; Git Bash's `/tmp` maps to the Windows temp folder when the repo
   lies in it.
-- `claims`: `tectonic`, `latexmk`, `pdflatex`/`xelatex`/`lualatex` and `typst compile` back a
-  build claim; a test file run by its interpreter (`node tests/test_lib.js`,
+- `claims`: `tectonic`, `latexmk`, `pdflatex`/`xelatex`/`lualatex`, `typst compile` and
+  PlatformIO's `pio run` back a build claim; a test file run by its interpreter (`node tests/test_lib.js`,
   `python tests/test_api.py`) and `claude plugin test` back a tests claim; "a lint-free
   cloth" is not a lint claim.
 - Checks read each command line once per run instead of once per rule: 33 rules on a 25 MB
