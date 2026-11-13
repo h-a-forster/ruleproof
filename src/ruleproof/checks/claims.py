@@ -103,6 +103,11 @@ _TEST_SCRIPT = (
     r"(?:(?:(?:ba|z)?sh|pwsh|powershell)\s+(?:-\w+\s+)*)?(?:\S*[\\/])?"
     r"(?:run[-_]?)?tests?(?:[-_]\w+)?\.(?:sh|ps1|bat|cmd)\b"
 )
+# A test file run by its interpreter: `node tests/test_lib.js`, `python tests/test_api.py`.
+_TEST_FILE = (
+    r"(?:python[\d.]*|py|node|bun|ruby|lua(?:jit)?)(?:\.exe)?\s+(?:-[XW]\s+\S+\s+|-\S+\s+)*"
+    r"(?:\S*[\\/])?(?:test_[\w-]+|[\w-]+[._](?:test|spec)|[\w-]+_test)\.\w+(?=\s|$)"
+)
 # A push claim names what was pushed or where to: "pushed the logic down" is not a push.
 _GIT_OBJ = r"(?:changes?|commits?|branch(?:es)?|fix(?:es)?|work|it|them|tags?|everything)"
 _REMOTE = (
@@ -147,7 +152,12 @@ CLAIMS: dict[str, Claim] = {
                 r"|rails\s+test|phpunit|pest|ctest|mix\s+test|swift\s+test|deno\s+test"
                 r"|bun\s+test|Invoke-Pester|composer\s+test|bazel(?:isk)?\s+test"
                 r"|(?:manage\.py|django-admin)\s+test|(?:run[-_]?)?tests?\.py"
-                r"|" + _RUN + r"(?:test|t|spec|check))\b|" + _TEST_SCRIPT
+                r"|claude\s+plugin\s+test|"
+                + _RUN
+                + r"(?:test|t|spec|check))\b|"
+                + _TEST_SCRIPT
+                + "|"
+                + _TEST_FILE
             ),
             "tests pass",
             "test command",
@@ -161,7 +171,9 @@ CLAIMS: dict[str, Claim] = {
                 *_marked(_LINT_SUBJECT),
                 r"\bno\s+(?:new\s+|remaining\s+)?(?:lint(?:ing)?|ruff|eslint|flake8|pylint|clippy)\s+"
                 r"(?:errors|warnings|issues|violations|problems|findings)\b",
-                r"\blint[- ](?:clean|free)\b",
+                # not the fabric: "a lint-free cloth"
+                r"\blint[- ](?:clean|free)\b"
+                r"(?!\s+(?:cloths?|wipes?|paper|towels?|fabric|swabs?)\b)",
             ),
             _cmd(
                 r"\b(?:ruff(?!\s+format)|flake8|pylint|pyflakes|pycodestyle|eslint"

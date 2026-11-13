@@ -31,7 +31,9 @@ All notable changes to this project are documented here. The format follows
   directory, like redirects; Git Bash's `/tmp` maps to the Windows temp folder when the repo
   lies in it.
 - `claims`: `tectonic`, `latexmk`, `pdflatex`/`xelatex`/`lualatex` and `typst compile` back a
-  build claim.
+  build claim; a test file run by its interpreter (`node tests/test_lib.js`,
+  `python tests/test_api.py`) and `claude plugin test` back a tests claim; "a lint-free
+  cloth" is not a lint claim.
 - Checks read each command line once per run instead of once per rule: 33 rules on a 25 MB
   Claude Code session took 37 s instead of 194 s.
 - Finding `cd` in a command with a long heredoc was quadratic in its length (1 s for a 33 kB
