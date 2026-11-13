@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ruleproof.checks import REGISTRY, load_all
+from ruleproof.checks._common import cap
 from ruleproof.models import Context, Rule, RuleResult
 
 _INPUT_NAMES = {"diff": "no diff", "session": "no transcript"}
@@ -20,9 +21,12 @@ def run_rule(rule: Rule, ctx: Context) -> RuleResult:
     if missing:
         return RuleResult(rule, "skip", ", ".join(_INPUT_NAMES[m] for m in missing))
     try:
-        return spec.fn(rule, ctx)
+        result = spec.fn(rule, ctx)
     except Exception as exc:  # one broken rule must not hide the others
         return RuleResult(rule, "skip", f"check crashed: {type(exc).__name__}: {exc}")
+    if not ctx.full_evidence:
+        result.evidence = cap(result.evidence)
+    return result
 
 
 def run_rules(rules: list[Rule], ctx: Context) -> list[RuleResult]:

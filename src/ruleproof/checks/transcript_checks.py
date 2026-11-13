@@ -7,7 +7,6 @@ import re
 from ruleproof import paths
 from ruleproof.checks import Param, register
 from ruleproof.checks._common import (
-    cap,
     clip,
     command_matches,
     command_outcome,
@@ -127,7 +126,7 @@ def forbid_command(rule: Rule, ctx: Context) -> RuleResult:
         summary = f"ran {quoted(hits[0].text)}"
     else:
         summary = f"{len(hits)} commands match {quoted(pattern)}"
-    return RuleResult(rule, "fail", summary, cap(evidence))
+    return RuleResult(rule, "fail", summary, evidence)
 
 
 @register(
@@ -331,7 +330,7 @@ def forbid_edit(rule: Rule, ctx: Context) -> RuleResult:
         rule,
         "fail",
         f"edited {plural(len(names), 'forbidden file')}: {preview(names)}",
-        cap(list(found.values())),
+        list(found.values()),
     )
 
 
@@ -384,7 +383,7 @@ def forbid_tool(rule: Rule, ctx: Context) -> RuleResult:
     ]
     tools = list(dict.fromkeys(ev.tool or "" for ev in hits))
     times = "once" if len(hits) == 1 else f"{len(hits)} times"
-    return RuleResult(rule, "fail", f"called {preview(tools)} {times}", cap(evidence))
+    return RuleResult(rule, "fail", f"called {preview(tools)} {times}", evidence)
 
 
 @register(
@@ -421,7 +420,7 @@ def forbid_message(rule: Rule, ctx: Context) -> RuleResult:
         return RuleResult(rule, "pass", f"no message matches {quoted(pattern)}")
     verb = "matches" if len(evidence) == 1 else "match"
     summary = f"{plural(len(evidence), 'assistant message')} {verb} {quoted(pattern)}"
-    return RuleResult(rule, "fail", summary, cap(evidence))
+    return RuleResult(rule, "fail", summary, evidence)
 
 
 @register(
@@ -464,4 +463,4 @@ def max_command_output(rule: Rule, ctx: Context) -> RuleResult:
     summary = (
         f"{plural(len(hits), 'command')} printed more than {limit} characters (largest {biggest})"
     )
-    return RuleResult(rule, "fail", summary, cap(evidence))
+    return RuleResult(rule, "fail", summary, evidence)

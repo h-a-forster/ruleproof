@@ -160,3 +160,5 @@ class Context:
     repo: Path | None
     diff: Diff | None = None
     session: Session | None = None
+    # Keep every evidence item: the hook looks for the proposed call among them.
+    full_evidence: bool = False

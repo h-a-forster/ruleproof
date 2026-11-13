@@ -565,6 +565,36 @@ def test_pretool_reads_the_transcript_for_rules_that_wait_for_the_user(pre_repo:
     assert reason is not None and "transcript rules skipped" in err
 
 
+def test_pretool_history_rules_still_deny_after_many_earlier_matches(pre_repo: Path) -> None:
+    # Reports cap evidence at 50 items; the hook must still see the proposed call.
+    (pre_repo / "ruleproof.toml").write_text(
+        'version = 1\n[[rule]]\nid = "push-when-asked"\ncheck = "forbid-command"\n'
+        "command = 'git push'\nunless_user = 'zzzz'\n"
+        '[[rule]]\nid = "fetch-when-asked"\ncheck = "forbid-tool"\n'
+        "tool = '^WebFetch$'\nunless_user = 'zzzz'\n",
+        encoding="utf-8",
+    )
+    calls = [
+        {"name": "Bash", "input": {"command": "git push"}},
+        {"name": "WebFetch", "input": {"url": "https://example.com"}},
+    ] * 60
+    records = [
+        {
+            "type": "assistant",
+            "sessionId": "s1",
+            "message": {"content": [{"type": "tool_use", "id": f"t{i}", **c}]},
+        }
+        for i, c in enumerate(calls)
+    ]
+    (pre_repo / "t.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+    )
+    reason, _ = pretool(pre_repo, "Bash", {"command": "git push"})
+    assert reason is not None and "push-when-asked" in reason
+    reason, _ = pretool(pre_repo, "WebFetch", {"url": "https://example.com"})
+    assert reason is not None and "fetch-when-asked" in reason
+
+
 EXISTING_TESTS_RULES = """version = 1
 
 [[rule]]

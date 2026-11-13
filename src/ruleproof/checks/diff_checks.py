@@ -7,7 +7,6 @@ import re
 from ruleproof import paths
 from ruleproof.checks import Param, register
 from ruleproof.checks._common import (
-    cap,
     clip,
     compile_regex,
     edit_relpath,
@@ -122,7 +121,7 @@ def forbid_change(rule: Rule, ctx: Context) -> RuleResult:
         rule,
         "fail",
         f"{plural(len(names), 'forbidden file')} changed: {preview(names)}",
-        cap(list(found.values())),
+        list(found.values()),
     )
 
 
@@ -175,7 +174,7 @@ def require_change(rule: Rule, ctx: Context) -> RuleResult:
     else:
         summary = f"{len(triggers)} matching files changed but nothing matching {want} did"
     evidence = [Evidence(f"changed without {want}", path=p) for p in triggers]
-    return RuleResult(rule, "fail", summary, cap(evidence))
+    return RuleResult(rule, "fail", summary, evidence)
 
 
 @register(
@@ -230,7 +229,7 @@ def forbid_text(rule: Rule, ctx: Context) -> RuleResult:
         return RuleResult(rule, "pass", f"no added line matches {quoted(pattern)}")
     verb = "matches" if len(evidence) == 1 else "match"
     summary = f"{plural(len(evidence), 'added line')} {verb} {quoted(pattern)}"
-    return RuleResult(rule, "fail", summary, cap(evidence))
+    return RuleResult(rule, "fail", summary, evidence)
 
 
 _RULE_FILES = frozenset(["ruleproof.toml", ".ruleproof.toml"])
@@ -299,7 +298,7 @@ def require_text(rule: Rule, ctx: Context) -> RuleResult:
     verb = "lacks" if len(missing) == 1 else "lack"
     summary = f"{plural(len(missing), kind)} {verb} {quoted(pattern)}"
     evidence = [Evidence(f"no match for {quoted(pattern)}", path=p) for p in missing]
-    return RuleResult(rule, "fail", summary, cap(evidence))
+    return RuleResult(rule, "fail", summary, evidence)
 
 
 def _content(f: FileChange, ctx: Context) -> str:

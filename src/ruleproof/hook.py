@@ -350,7 +350,9 @@ def _judge_with_history(
             ev.index = i
     last = len(session.events) - 1
     out = []
-    for result in run_rules(rules, Context(repo=repo, diff=None, session=session)):
+    for result in run_rules(
+        rules, Context(repo=repo, diff=None, session=session, full_evidence=True)
+    ):
         evidence = [e for e in result.evidence if e.event == last]
         if result.status == "fail" and evidence:
             result.evidence = evidence

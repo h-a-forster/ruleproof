@@ -342,7 +342,9 @@ def test_forbid_text_scope() -> None:
 
 def test_forbid_text_caps_evidence() -> None:
     d = diff(fc("a.py", added=["bad"] * 80))
-    r = run(make_rule("forbid-text", pattern="bad"), Context(REPO, d))
+    rule = make_rule("forbid-text", pattern="bad")
+    assert len(run(rule, Context(REPO, d)).evidence) == 80
+    r = run_rule(rule, Context(REPO, d))  # the engine caps what reports show
     assert r.summary.startswith("80 added lines")
     assert len(r.evidence) == 51
     assert r.evidence[-1].message == "... and 30 more"

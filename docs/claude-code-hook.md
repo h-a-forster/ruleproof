@@ -88,8 +88,12 @@ Claude Code runs PreToolUse hooks after Claude proposes a tool call and before i
    existing tests") lets Claude keep editing the new tests it wrote;
 3. runs the `error`-severity rules whose check is `forbid-command`, `forbid-edit`, `forbid-tool`
    or `forbid-change` against that event (no git diff, so it is fast). A `forbid-command` or
-   `forbid-tool` rule with `unless_user` or `unless_after` also reads the transcript (`transcript_path`), since
-   its verdict depends on earlier user messages or commands; only the proposed call can fail it;
+   `forbid-tool` rule with `unless_user` or `unless_after` also reads the transcript
+   (`transcript_path`), since its verdict depends on earlier user messages or commands; only the
+   proposed call can fail it. That read costs time in proportion to the transcript's size, about
+   15 s per GB (2.8 s for a 200 MB synthetic transcript on a laptop), on every call. Claude Code
+   lets the call through when the hook times out, so with such rules raise the PreToolUse
+   `timeout` above 10 (60 covers sessions of a few GB);
 4. if one fails, prints
 
    ```json
