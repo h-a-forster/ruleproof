@@ -12,7 +12,7 @@ All notable changes to this project are documented here. The format follows
   messages mention it, for steps that need a go-ahead) and `unless_after` (allowed once a
   check command ran first, e.g. listing junctions before a recursive delete).
 - `forbid-tool` takes `input`, a regex on the call's full input, so rules can forbid calls
-  with, or without, a setting (`Agent` calls that set no `effort`).
+  with, or without, a setting (`Agent` calls that set no `effort`), and `unless_user`.
 - `require-command` takes `after_tool`: the command must run after the last call to a
   matching tool (a notification after a `Workflow`), instead of after the last edit.
 - New check `max-command-output`: a shell command printed more than `max_chars` characters.

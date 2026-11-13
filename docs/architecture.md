@@ -182,7 +182,7 @@ annotation's file and line. Annotations in a nested instruction file (`pkg/AGENT
 | `forbid-command` | transcript | `command` (regex, required), `ignore_case`, `match_quoted` (default false: quoted strings and heredocs are ignored), `tool` (shell tool name), `unless_user` / `unless_after` (allowed after a matching user message / command) | a command matches |
 | `require-command` | transcript | `command` (regex, required), `must_succeed` (default true), `after_last_edit` (default true), `when_paths` (globs), `edit_paths` / `ignore_edit_paths` (which edits count), `match_quoted` (as in `forbid-command`), `after_tool` (count from the last call to a matching tool instead) | no matching command ran (after the last counted edit; with exit 0). Exit unknown → `unverified` |
 | `forbid-edit` | transcript | `paths` (globs), `outside_repo` (bool) | the agent edited a matching path (even if later reverted), or any path outside the repo |
-| `forbid-tool` | transcript | `tool` (regex, required), `input` (regex on the call's input) | the agent called a matching tool |
+| `forbid-tool` | transcript | `tool` (regex, required), `input` (regex on the call's input), `unless_user` | the agent called a matching tool |
 | `forbid-message` | transcript | `pattern` (regex, required), `ignore_case`, `subagents` (default false: main agent only) | an assistant message matches |
 | `max-command-output` | transcript | `max_chars` (int, required), `tool` (shell tool name) | a command printed more than `max_chars` characters |
 | `claims` | transcript | `claims` (list; default all), `ignore_edit_paths` | the agent claims a result (tests pass, lint clean, types check, build works, formatted, committed, pushed) with no matching successful command after its last edit |
@@ -277,7 +277,7 @@ tools (`Bash`, `PowerShell`) become commands, file tools (`Write`, `Edit`, `Mult
 `NotebookEdit`) edits, and anything else a tool call. An edit of a file that does not exist
 yet is an add; with `--base REF` (default `HEAD`), editing a file that exists now but not at
 `REF` also counts as an add, so a rule against modifying existing files does not stop the
-agent from editing a file it created in this session. A `forbid-command` rule with
-`unless_user` or `unless_after` is run on the transcript so far (`transcript_path`) plus the
+agent from editing a file it created in this session. A `forbid-command` or
+`forbid-tool` rule with `unless_user` or `unless_after` is run on the transcript so far (`transcript_path`) plus the
 proposed call, and only the proposed call can fail it; without a readable transcript there is
 no earlier request or check, so such a rule denies.

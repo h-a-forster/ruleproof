@@ -87,8 +87,8 @@ Claude Code runs PreToolUse hooks after Claude proposes a tool call and before i
    So a `forbid-change` rule with `actions = ["modify", "delete"]` on `tests/**` ("never edit
    existing tests") lets Claude keep editing the new tests it wrote;
 3. runs the `error`-severity rules whose check is `forbid-command`, `forbid-edit`, `forbid-tool`
-   or `forbid-change` against that event (no git diff, so it is fast). A `forbid-command` rule
-   with `unless_user` or `unless_after` also reads the transcript (`transcript_path`), since
+   or `forbid-change` against that event (no git diff, so it is fast). A `forbid-command` or
+   `forbid-tool` rule with `unless_user` or `unless_after` also reads the transcript (`transcript_path`), since
    its verdict depends on earlier user messages or commands; only the proposed call can fail it;
 4. if one fails, prints
 

@@ -43,6 +43,27 @@ def _optional_regex(pattern: str | None, ignore_case: bool = False) -> re.Patter
     return compile_regex(pattern, ignore_case) if pattern else None
 
 
+_UNLESS_USER = Param(
+    "regex", doc="allowed once an earlier user message matches (the user asked for it)"
+)
+
+
+class _Requests:
+    """Which actors' user messages so far match ``unless_user``: a subagent's prompt counts
+    as its user message, and the main user's messages count for every agent."""
+
+    def __init__(self, pattern: str | None) -> None:
+        self.rx = _optional_regex(pattern, ignore_case=True)
+        self.actors: set[str] = set()
+
+    def see(self, ev: Event) -> None:
+        if self.rx is not None and ev.kind is EventKind.USER and self.rx.search(ev.text):
+            self.actors.add(ev.actor)
+
+    def allow(self, ev: Event) -> bool:
+        return bool(self.actors & {"main", ev.actor})
+
+
 @register(
     "forbid-command",
     needs={"session"},
@@ -51,9 +72,7 @@ def _optional_regex(pattern: str | None, ignore_case: bool = False) -> re.Patter
         "ignore_case": Param("bool", default=False, doc="match case-insensitively"),
         "match_quoted": _MATCH_QUOTED,
         "tool": Param("regex", doc="only commands run by a shell tool whose name matches"),
-        "unless_user": Param(
-            "regex", doc="allowed once an earlier user message matches (the user asked for it)"
-        ),
+        "unless_user": _UNLESS_USER,
         "unless_after": Param(
             "regex", doc="allowed once an earlier command matches (a required check ran first)"
         ),
@@ -79,15 +98,13 @@ def forbid_command(rule: Rule, ctx: Context) -> RuleResult:
     rx = compile_regex(pattern, rule.params["ignore_case"])
     quoted_too: bool = rule.params["match_quoted"]
     tool_rx = _optional_regex(rule.params["tool"])
-    user_rx = _optional_regex(rule.params["unless_user"], ignore_case=True)
+    requests = _Requests(rule.params["unless_user"])
     after_rx = _optional_regex(rule.params["unless_after"], ignore_case=True)
-    asked: set[str] = set()  # actors whose user messages so far match `unless_user`
     checked = False  # a command matching `unless_after` ran
     hits: list[Event] = []
     for ev in ctx.session.events:
         if ev.kind is EventKind.USER:
-            if user_rx is not None and user_rx.search(ev.text):
-                asked.add(ev.actor)
+            requests.see(ev)
             continue
         if ev.kind is not EventKind.COMMAND or did_not_run(ev):
             continue
@@ -95,7 +112,7 @@ def forbid_command(rule: Rule, ctx: Context) -> RuleResult:
         if (tool_rx is None or tool_rx.search(ev.tool or "")) and command_matches(
             rx, ev.text, quoted_too, ps
         ):
-            allowed = (user_rx is not None and bool(asked & {"main", ev.actor})) or checked
+            allowed = (requests.rx is not None and requests.allow(ev)) or checked
             if not allowed:
                 hits.append(ev)
         if after_rx is not None and command_matches(after_rx, ev.text, quoted_too, ps):
@@ -327,6 +344,7 @@ _TOOL_KINDS = (EventKind.TOOL, EventKind.COMMAND, EventKind.EDIT)
     params={
         "tool": Param("regex", required=True, doc="tool names the agent must not call"),
         "input": Param("regex", doc="only calls whose input matches"),
+        "unless_user": _UNLESS_USER,
     },
     doc=(
         "Fails when the agent or a subagent called a tool whose name matches `tool` (searched "
@@ -336,7 +354,8 @@ _TOOL_KINDS = (EventKind.TOOL, EventKind.COMMAND, EventKind.EDIT)
         "calls whose input matches count: the tool's input as JSON with sorted keys "
         '(`{"effort": "high", "prompt": ...}`), the command line of a shell tool, the path of '
         "a file edit. A negative lookahead forbids calls that lack a setting: "
-        "`input = '^(?![\\s\\S]*\"effort\")'`."
+        "`input = '^(?![\\s\\S]*\"effort\")'`. `unless_user` allows a call once an earlier "
+        "user message matches, as in forbid-command."
     ),
 )
 def forbid_tool(rule: Rule, ctx: Context) -> RuleResult:
@@ -344,14 +363,18 @@ def forbid_tool(rule: Rule, ctx: Context) -> RuleResult:
     pattern: str = rule.params["tool"]
     rx = compile_regex(pattern)
     input_rx = _optional_regex(rule.params["input"])
-    hits = [
-        ev
-        for ev in ctx.session.events
-        if ev.kind in _TOOL_KINDS
-        and ev.tool
-        and rx.search(ev.tool)
-        and (input_rx is None or input_rx.search(ev.input or ev.text or ev.path or ""))
-    ]
+    requests = _Requests(rule.params["unless_user"])
+    hits: list[Event] = []
+    for ev in ctx.session.events:
+        requests.see(ev)
+        if (
+            ev.kind in _TOOL_KINDS
+            and ev.tool
+            and rx.search(ev.tool)
+            and (input_rx is None or input_rx.search(ev.input or ev.text or ev.path or ""))
+            and not (requests.rx is not None and requests.allow(ev))
+        ):
+            hits.append(ev)
     if not hits:
         where = f" with input matching {quoted(rule.params['input'])}" if input_rx else ""
         return RuleResult(rule, "pass", f"no tool call matches {quoted(pattern)}{where}")

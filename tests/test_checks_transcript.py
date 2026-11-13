@@ -485,6 +485,13 @@ def test_forbid_tool_input() -> None:
         "pass",
         'no tool call matches "^Agent$" with input matching "low"',
     )
+    # The user may ask for what the rule otherwise forbids.
+    high = '"effort": "(?:xhigh|max)"'
+    s = session(
+        agent('{"effort": "xhigh"}'), user("run it at extra effort"), agent('{"effort": "max"}')
+    )
+    r = run(make_rule("forbid-tool", tool="^Agent$", input=high, unless_user="extra|xhigh"), s)
+    assert (r.status, [e.event for e in r.evidence]) == ("fail", [0])
     # Without a recorded input, the command line or the path is the input.
     s = session(cmd("cat ~/.secrets/hook.txt"), edit("notes/hook.txt"))
     r = run(make_rule("forbid-tool", tool=".", input=r"hook\.txt"), s)

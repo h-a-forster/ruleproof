@@ -355,6 +355,7 @@ Fails when the agent called a matching tool. Tool names are the agent's own: `We
 | --- | --- | --- | --- |
 | `tool` | regex | required | Tool names that must not be called. |
 | `input` | regex | any input | Only calls whose input matches: the tool's input as JSON with sorted keys, the command line of a shell tool, the path of a file edit. |
+| `unless_user` | regex | none | Allow the call once an earlier user message matches, as in `forbid-command`. |
 
 ```toml
 [[rule]]

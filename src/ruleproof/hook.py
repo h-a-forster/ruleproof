@@ -325,7 +325,7 @@ def evaluate_pretool(
 
 def _needs_history(rule: Rule) -> bool:
     """A rule whose verdict on the proposed call depends on earlier messages or commands."""
-    return rule.check == "forbid-command" and bool(
+    return rule.check in ("forbid-command", "forbid-tool") and bool(
         rule.params.get("unless_user") or rule.params.get("unless_after")
     )
 
@@ -354,7 +354,12 @@ def _judge_with_history(
         evidence = [e for e in result.evidence if e.event == last]
         if result.status == "fail" and evidence:
             result.evidence = evidence
-            result.summary = f"ran {quoted(session.events[last].text)}"
+            call = session.events[last]
+            result.summary = (
+                f"ran {quoted(call.text)}"
+                if call.kind is EventKind.COMMAND
+                else f"called {call.tool} once"
+            )
             out.append(result)
     return out
 
