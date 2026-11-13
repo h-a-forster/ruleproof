@@ -128,6 +128,12 @@ def test_in_scope(path: str, scope: str | None, expected: bool) -> None:
         ("/home/u/proj2/a.py", "/home/u/proj", None, None),
         ("a.py", "/home/u/proj", "/home/u/proj/sub", "sub/a.py"),
         ("../../etc/passwd", "/home/u/proj", None, None),
+        # Git Bash's /tmp is the Windows temp folder
+        ("/tmp/run1/tmp/a.py", "C:/Users/x/AppData/Local/Temp/run1", None, "tmp/a.py"),
+        ("/tmp/run2/a.py", "C:/Users/x/AppData/Local/Temp/run1", None, None),
+        ("/tmp/a.py", "C:/Users/x/proj", "C:/Users/x/AppData/Local/Temp/w", None),
+        ("/tmp/a.py", "C:/Users/x/AppData/Local/Temp", None, "a.py"),
+        ("/tmp/a.py", "/tmp", None, "a.py"),
     ],
 )
 def test_relpath_in_repo(path: str, repo: str, cwd: str | None, expected: str | None) -> None:

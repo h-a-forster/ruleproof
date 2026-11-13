@@ -947,23 +947,43 @@ def _shell_writes(command: str, powershell: bool) -> tuple[str | None, ...]:
     ``--check`` or ``--diff``. Writes by scripts or other programs are not seen.
     """
     out: list[str | None] = []
+    top: tuple[str, list[re.Match[str]], list[int]] | None = None  # the command line itself
     for view in _views(command, powershell):
         if view.raw or view.remote:  # a script run over ssh writes on the other host
             continue
         text = _QUOTE_CHARS.sub("", view.masked)
         moves = [c for c in _CD.finditer(text) if not _in_child_shell(text, c)]
         depth = _paren_depths(text)
+        top = top or (text, moves, depth)
         for m in _REDIRECT.finditer(text):
             target = m.group(1)
             if target.lower() not in _NULL_TARGETS and not target.startswith("$"):
                 before = [c for c in moves if _cd_reaches(depth, c.start(), m.start())]
                 out.append(_after_cd(target, _cwd_at(before)))
+    for prog, target in _named_writes(command, powershell):
+        if target is not None and top is not None:  # `cd sub && sed -i ... f.py`: sub/f.py
+            text, moves, depth = top
+            start = text.find(prog)
+            at = text.find(target, max(start, 0))
+            if start >= 0 and at >= 0:
+                before = [c for c in moves if _cd_reaches(depth, c.start(), at)]
+                target = _after_cd(target, _cwd_at(before))
+        out.append(target)
+    return tuple(out)
+
+
+def _named_writes(command: str, powershell: bool) -> list[tuple[str, str | None]]:
+    """(program, file) for files written by programs that name them (``tee``, ``sed -i``) or
+    that rewrite files (``git apply``, formatters, ``--fix``); file None when unknown."""
+    out: list[tuple[str, str | None]] = []
     for words in simple_commands(command, powershell, local_only=True):
         for cand in candidates(words):
             prog, args = cand[0].lower(), cand[1:]
             line = " ".join(cand)
             if prog == "tee":  # its file operands; a redirect after it is read above
-                out.extend(a for a in args if not a.startswith("-") and not _REDIRECT_WORD.match(a))
+                out.extend(
+                    (prog, a) for a in args if not a.startswith("-") and not _REDIRECT_WORD.match(a)
+                )
             elif prog in ("sed", "perl") and any(re.match(r"^-[a-zA-Z]*i", a) for a in args):
                 operands: list[str] = []
                 script_flag = skip = False
@@ -975,19 +995,19 @@ def _shell_writes(command: str, powershell: bool) -> tuple[str | None, ...]:
                     elif not a.startswith("-"):
                         operands.append(a)
                 files = operands if script_flag else operands[1:]
-                out.extend([f for f in files if f.strip()] or [None])
+                out.extend([(prog, f) for f in files if f.strip()] or [(prog, None)])
             elif re.match(r"^(?:git (?:apply|am|restore|checkout --)|patch)\b", line):
                 # `git apply --stat --apply` prints the stat and applies the patch.
                 if "--apply" in args or not _NO_WRITE_FLAGS.intersection(args):
-                    out.append(None)
+                    out.append((prog, None))
             elif "--check" in args or "--diff" in args:
                 continue
             elif "--fix" in args or "--write" in args or _FORMAT_WRITES.match(line):
-                out.append(None)
+                out.append((prog, None))
             else:
                 continue
             break
-    return tuple(out)
+    return out
 
 
 # --- outcomes ---------------------------------------------------------------------------

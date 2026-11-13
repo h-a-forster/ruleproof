@@ -152,12 +152,28 @@ def _msys_to_windows(path: str) -> str:
     return path
 
 
+_WINDOWS_TEMP = re.compile(r"^(.*?[\\/]AppData[\\/]Local[\\/]Temp)(?=[\\/]|$)", re.IGNORECASE)
+
+
+def _msys_tmp(path: str, *anchors: str) -> str:
+    """Git Bash's ``/tmp`` is the Windows temp folder: map it when the repo or working
+    directory shows where that is (``.../AppData/Local/Temp/...``)."""
+    if path != "/tmp" and not path.startswith("/tmp/"):
+        return path
+    for anchor in anchors:
+        m = _WINDOWS_TEMP.match(anchor)
+        if m:
+            return m.group(1) + path[4:]
+    return path
+
+
 def relpath_in_repo(path: str, repo: Path | str | None, cwd: str | None = None) -> str | None:
     """Map a path recorded in a transcript to a repo-relative posix path.
 
     Relative paths are resolved against ``cwd`` (the agent's working directory) when given,
     else against ``repo``. Returns None when the path lies outside the repo. Comparison is
-    case-insensitive for Windows paths and understands MSYS ``/c/...`` paths. ``~/...`` is
+    case-insensitive for Windows paths and understands MSYS ``/c/...`` paths (and ``/tmp``
+    when the repo or working directory lies in the Windows temp folder). ``~/...`` is
     expanded with ``HOME`` (or ``USERPROFILE``) from the environment, never the filesystem.
     """
     if repo is None:
@@ -173,9 +189,9 @@ def relpath_in_repo(path: str, repo: Path | str | None, cwd: str | None = None) 
             return None
         raw = expanded
     if windows:
-        raw = _msys_to_windows(raw)
         repo_s = _msys_to_windows(repo_s.replace("\\", "/"))
         base = _msys_to_windows(cwd.replace("\\", "/")) if cwd else repo_s
+        raw = _msys_tmp(_msys_to_windows(raw), repo_s, base)
         pw = PureWindowsPath(raw)
         if not pw.is_absolute():
             pw = PureWindowsPath(base) / pw
