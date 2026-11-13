@@ -493,6 +493,7 @@ class _View:
     masked: str  # same length as the source text; quote characters kept
     ps: bool
     raw: bool = False  # interpreter code (python -c): matched as written, never segmented
+    remote: bool = False  # a script run on another host (`ssh host "..."`)
 
 
 def _read_word(s: str, i: int, ps: bool) -> str:
@@ -520,32 +521,35 @@ def _read_word(s: str, i: int, ps: bool) -> str:
     return s[i:] if end == -1 else s[i:end]
 
 
-def _views(command: str, ps: bool, depth: int = 0, keep_operators: bool = False) -> list[_View]:
+def _views(
+    command: str, ps: bool, depth: int = 0, keep_operators: bool = False, remote: bool = False
+) -> list[_View]:
     ps = ps or bool(_PS_HINT.search(command))
     masked = _mask(command, ps, keep_operators)
-    out = [_View(masked, ps)]
+    out = [_View(masked, ps, remote=remote)]
     if depth >= _MAX_NESTING:
         return out
-    nested: list[tuple[str, bool]] = []
+    nested: list[tuple[str, bool, bool]] = []
     for m in _POSIX_C.finditer(masked):
-        nested.append((_read_word(command, m.end(), False), False))
+        nested.append((_read_word(command, m.end(), False), False, remote))
     for m in _PS_C.finditer(masked):
-        nested.append((_read_word(command, m.end(), True), True))
+        nested.append((_read_word(command, m.end(), True), True, remote))
     for m in _CMD_C.finditer(masked):
-        nested.append((_read_word(command, m.end(), False), False))
+        nested.append((_read_word(command, m.end(), False), False, remote))
     for m in _EVAL.finditer(masked):
-        nested.append((_read_word(command, m.end(), ps), ps))
+        ssh = m.group(0).lower().startswith("ssh")
+        nested.append((_read_word(command, m.end(), ps), ps, remote or ssh))
     for m in _PIPE_SHELL.finditer(masked):
         start = m.start(1)
         word = _read_word(command, start, ps) if command[start] in "'\"" else m.group(1)
-        nested.append((word, m.group(2).lower() in ("pwsh", "powershell")))
-    for text, nested_ps in nested:
+        nested.append((word, m.group(2).lower() in ("pwsh", "powershell"), remote))
+    for text, nested_ps, nested_remote in nested:
         if text.strip():
-            out.extend(_views(text, nested_ps, depth + 1, keep_operators))
+            out.extend(_views(text, nested_ps, depth + 1, keep_operators, nested_remote))
     for m in _SCRIPT_E.finditer(masked):
         code = _read_word(command, m.end(), ps)
         if code.strip():
-            out.append(_View(code, ps, raw=True))
+            out.append(_View(code, ps, raw=True, remote=remote))
     return out
 
 
@@ -647,15 +651,18 @@ def _program(token: str) -> str:
     return re.sub(r"\.(?:exe|cmd|bat|ps1)$", "", name, flags=re.IGNORECASE)
 
 
-def simple_commands(command: str, powershell: bool = False) -> list[list[str]]:
+def simple_commands(
+    command: str, powershell: bool = False, local_only: bool = False
+) -> list[list[str]]:
     """The simple commands in a command line (and nested scripts), as word lists.
 
     Separators are ``&&``, ``||``, ``;``, ``|``, ``&``, newlines, parentheses, braces and
     command substitutions; quoted prose, comments and heredoc bodies are blanked first.
+    ``local_only`` leaves out scripts run on another host through ``ssh``.
     """
     out: list[list[str]] = []
     for view in _views(command, powershell):
-        if view.raw:
+        if view.raw or (local_only and view.remote):
             continue
         for seg in _SEPARATOR.split(view.masked):
             words = [w for w in _tokens(seg, view.ps) if w]
@@ -826,6 +833,7 @@ def _invocations(words: list[str]) -> Iterable[list[str]]:
 # --- shell writes -----------------------------------------------------------------------
 
 _REDIRECT = re.compile(r"(?<![<>&\d])\d?>>?\s*(?!&)([^\s;&|<>()]+)")
+_REDIRECT_WORD = re.compile(r"^(?:\d*|&)[<>]")
 _NULL_TARGETS = frozenset(["/dev/null", "nul", "$null", "/dev/stdout", "/dev/stderr"])
 _FORMAT_WRITES = re.compile(
     r"^(?:ruff format|black|isort|cargo fmt|rustfmt|gofmt -w|goimports -w|shfmt -w"
@@ -938,7 +946,7 @@ def _shell_writes(command: str, powershell: bool) -> tuple[str | None, ...]:
     """
     out: list[str | None] = []
     for view in _views(command, powershell):
-        if view.raw:
+        if view.raw or view.remote:  # a script run over ssh writes on the other host
             continue
         text = _QUOTE_CHARS.sub("", view.masked)
         moves = [c for c in _CD.finditer(text) if not _in_child_shell(text, c)]
@@ -948,12 +956,12 @@ def _shell_writes(command: str, powershell: bool) -> tuple[str | None, ...]:
             if target.lower() not in _NULL_TARGETS and not target.startswith("$"):
                 before = [c for c in moves if _cd_reaches(depth, c.start(), m.start())]
                 out.append(_after_cd(target, _cwd_at(before)))
-    for words in simple_commands(command, powershell):
+    for words in simple_commands(command, powershell, local_only=True):
         for cand in candidates(words):
             prog, args = cand[0].lower(), cand[1:]
             line = " ".join(cand)
-            if prog == "tee":
-                out.extend(a for a in args if not a.startswith("-"))
+            if prog == "tee":  # its file operands; a redirect after it is read above
+                out.extend(a for a in args if not a.startswith("-") and not _REDIRECT_WORD.match(a))
             elif prog in ("sed", "perl") and any(re.match(r"^-[a-zA-Z]*i", a) for a in args):
                 operands: list[str] = []
                 script_flag = skip = False

@@ -683,6 +683,9 @@ def test_invokes_requires_command_position(command: str, expected: bool) -> None
         ("echo x > notes.txt", ["notes.txt"]),
         ("cat >> CHANGELOG.md <<EOF\nentry\nEOF", ["CHANGELOG.md"]),
         ("pytest 2>&1 | tee out.log", ["out.log"]),
+        ("sudo tee -a /etc/x.conf >/dev/null 2>&1 <<EOF\nx\nEOF", ["/etc/x.conf"]),
+        ("ssh -o BatchMode=yes me@host 'echo x > a.txt; sudo tee /etc/y'", []),  # remote
+        ("ssh host 'cat x' > copy.txt", ["copy.txt"]),
         ("sed -i 's/a b/c/' src/a.py", ["src/a.py"]),
         ("sed -i.bak -e s/a/b/ x.py y.py", ["x.py", "y.py"]),
         ("git apply fix.patch", [None]),

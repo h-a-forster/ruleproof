@@ -217,7 +217,8 @@ CLAIMS: dict[str, Claim] = {
                 r"|mvnw?\b.*\b(?:package|compile|install|verify)|dotnet\s+build|msbuild"
                 r"|cmake\s+--build|ninja|bazel\s+build|python3?\s+-m\s+build|uv\s+build"
                 r"|poetry\s+build|hatch\s+build|swift\s+build|xcodebuild|gem\s+build"
-                r"|docker\s+build|" + _RUN + r"build|make(?:\s+(?:all|build|release|dist))?\s*$)"
+                r"|docker\s+build|tectonic|latexmk|(?:pdf|xe|lua)?latex|typst\s+compile"
+                r"|" + _RUN + r"build|make(?:\s+(?:all|build|release|dist))?\s*$)"
             ),
             "the build succeeds",
             "build command",

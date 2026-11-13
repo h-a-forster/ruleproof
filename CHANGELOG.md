@@ -24,6 +24,11 @@ All notable changes to this project are documented here. The format follows
   events; background-task notifications, messages from other sessions, local command output
   and system reminders are no longer user events; slash commands read as `/name args`.
 - The truncation marker in stored output states exactly how many characters it replaced.
+- Writes on another host (`ssh host 'echo x > f'`) and redirect words after `tee`
+  (`tee /etc/x >/dev/null`) no longer count as edits, which reset `claims` and
+  `require-command` evidence.
+- `claims`: `tectonic`, `latexmk`, `pdflatex`/`xelatex`/`lualatex` and `typst compile` back a
+  build claim.
 - Checks read each command line once per run instead of once per rule: 33 rules on a 25 MB
   Claude Code session took 37 s instead of 194 s.
 
