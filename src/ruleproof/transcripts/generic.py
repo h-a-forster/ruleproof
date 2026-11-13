@@ -18,7 +18,7 @@ from ruleproof.transcripts._util import finish, int_or_none, iter_records, str_o
 AGENT = "generic"
 KINDS = {k.value for k in EventKind}
 _ACTIONS: set[str] = set(get_args(EditAction))
-_STR_FIELDS = ("text", "timestamp", "tool", "path", "output", "actor")
+_STR_FIELDS = ("text", "timestamp", "tool", "path", "output", "actor", "input")
 
 
 def parse(path: Path, include_subagents: bool = True) -> Session:
@@ -64,6 +64,7 @@ def _event(rec: dict[str, Any], kind: EventKind, warnings: list[str], n: int) ->
             warn(warnings, f"record {n}: {name} should be a string")
     ev.actor = ev.actor or "main"
     ev.output = truncate(ev.output)
+    ev.input = truncate(ev.input)
     if rec.get("exit_code") is not None:
         ev.exit_code = int_or_none(rec["exit_code"])
         if ev.exit_code is None:

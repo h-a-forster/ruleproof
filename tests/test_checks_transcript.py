@@ -241,6 +241,47 @@ def test_forbid_command_pass() -> None:
     assert (r.status, r.summary) == ("pass", 'no command matches "rm -rf"')
 
 
+def user(text: str, actor: str = "main") -> Event:
+    return Event(0, EventKind.USER, text, actor=actor)
+
+
+def test_forbid_command_unless_user_asked() -> None:
+    rule = make_rule("forbid-command", command=r"git\s+push", unless_user=r"\bpush\b")
+    s = session(user("fix the bug"), cmd("git push"), user("now PUSH it"), cmd("git push"))
+    r = run(rule, s)
+    assert (r.status, [e.event for e in r.evidence]) == ("fail", [1])
+    # A subagent is covered by the main user's request and by its own prompt.
+    s = session(user("push when green"), cmd("git push", actor="sub-1"))
+    assert run(rule, s).status == "pass"
+    s = session(user("push it", actor="sub-1"), cmd("git push", actor="sub-1"), cmd("git push"))
+    r = run(rule, s)
+    assert (r.status, [e.event for e in r.evidence]) == ("fail", [2])
+
+
+def test_forbid_command_unless_after() -> None:
+    rule = make_rule("forbid-command", command=r"\brm\s+-rf\b", unless_after=r"ReparsePoint")
+    s = session(
+        cmd("rm -rf build"),
+        cmd("Get-ChildItem -Recurse -Force -Attributes ReparsePoint build"),
+        cmd("rm -rf build"),
+    )
+    r = run(rule, s)
+    assert (r.status, [e.event for e in r.evidence]) == ("fail", [0])
+    assert run(rule, session(cmd("rm -rf x"), cmd("ls"))).status == "fail"
+    assert run(rule, session(cmd("ls"))).status == "pass"
+
+
+def test_forbid_command_tool_filter() -> None:
+    rule = make_rule(
+        "forbid-command", command=r"^(?![\s\S]*MSYS_NO_PATHCONV)[\s\S]*\bgh api /", tool="^Bash$"
+    )
+    ps = Event(0, EventKind.COMMAND, "gh api /repos/a/b", tool="PowerShell", exit_code=0)
+    s = session(ps, cmd("MSYS_NO_PATHCONV=1 gh api /repos/a/b"))
+    assert run(rule, s).status == "pass"
+    r = run(rule, session(ps, cmd("gh api /repos/a/b")))
+    assert (r.status, [e.event for e in r.evidence]) == ("fail", [1])
+
+
 # --- require-command --------------------------------------------------------------------
 
 E = "C:/work/repo/src/app.py"
@@ -429,6 +470,75 @@ def test_forbid_tool() -> None:
     r = run(make_rule("forbid-tool", tool="^Bash$"), s)
     assert r.summary == "called Bash once"
     assert run(make_rule("forbid-tool", tool="webfetch"), s).status == "pass"
+
+
+def test_forbid_tool_input() -> None:
+    def agent(inp: str) -> Event:
+        return Event(0, EventKind.TOOL, "audit", tool="Agent", input=inp)
+
+    no_effort = r'^(?![\s\S]*"effort")'
+    s = session(agent('{"effort": "high", "prompt": "x"}'), agent('{"prompt": "y"}'))
+    r = run(make_rule("forbid-tool", tool="^Agent$", input=no_effort), s)
+    assert (r.status, [e.event for e in r.evidence]) == ("fail", [1])
+    r = run(make_rule("forbid-tool", tool="^Agent$", input="low"), s)
+    assert (r.status, r.summary) == (
+        "pass",
+        'no tool call matches "^Agent$" with input matching "low"',
+    )
+    # Without a recorded input, the command line or the path is the input.
+    s = session(cmd("cat ~/.secrets/hook.txt"), edit("notes/hook.txt"))
+    r = run(make_rule("forbid-tool", tool=".", input=r"hook\.txt"), s)
+    assert [e.event for e in r.evidence] == [0, 1]
+
+
+def test_require_command_after_tool() -> None:
+    rule = make_rule("require-command", command=r"notify\.py done", after_tool="^Workflow$")
+    s = session(edit("a.py"), tool("Workflow"), cmd("python notify.py done ok"), edit("b.py"))
+    r = run(rule, s)
+    assert r.status == "pass"  # later edits do not matter; the workflow call does
+    s = session(cmd("python notify.py done early"), tool("Workflow"), say("finished"))
+    r = run(rule, s)
+    assert (r.status, r.evidence[0].event) == ("fail", 1)
+    assert r.summary.startswith('no command matching "notify\\.py done" ran after Workflow')
+    s = session(tool("Workflow"), cmd("python notify.py done x", exit_code=1))
+    assert run(rule, s).status == "fail"
+    rule.params["must_succeed"] = False
+    assert run(rule, s).status == "pass"
+    r = run(rule, session(edit("a.py"), say("done")))
+    assert (r.status, r.summary) == (
+        "pass",
+        'not required: no call to a tool matching "^Workflow$"',
+    )
+
+
+# --- max-command-output -----------------------------------------------------------------
+
+
+def test_max_command_output() -> None:
+    from ruleproof.transcripts._shell import truncate
+
+    big = truncate("x" * 9000)
+    persisted = "<persisted-output>\nOutput too large (193.9KB). Full output saved to: f.txt"
+    s = session(
+        cmd("ls", output="a" * 2000),
+        cmd("cat log", output=big),
+        Event(0, EventKind.COMMAND, "dir", tool="PowerShell", exit_code=0, output=persisted),
+        cmd("make", output="b" * 2001, exit_code=2),
+    )
+    r = run(make_rule("max-command-output", max_chars=2000), s)
+    assert r.status == "fail"
+    assert [(e.event, e.message) for e in r.evidence] == [
+        (1, "printed 9000 characters"),
+        (2, "printed 198554 characters"),
+        (3, "printed 2001 characters"),
+    ]
+    assert r.summary == "3 commands printed more than 2000 characters (largest 198554)"
+    r = run(make_rule("max-command-output", max_chars=2000, tool="^Bash$"), s)
+    assert [e.event for e in r.evidence] == [1, 3]
+    r = run(make_rule("max-command-output", max_chars=10**6), s)
+    assert (r.status, r.summary) == ("pass", "no command printed more than 1000000 characters")
+    r = run(make_rule("max-command-output", max_chars=-1), s)
+    assert (r.status, r.summary) == ("skip", "max_chars must not be negative")
 
 
 # --- forbid-message ---------------------------------------------------------------------

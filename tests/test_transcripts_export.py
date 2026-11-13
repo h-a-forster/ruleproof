@@ -88,3 +88,24 @@ def test_write_sqlite_real_fixture(tmp_path: Path) -> None:
         actors = {a for (a,) in conn.execute("SELECT DISTINCT actor FROM events")}
     assert count == len(s.events)
     assert actors == {"main", "a0b1c2"}
+
+
+def test_write_sqlite_adds_the_input_column_to_an_older_database(tmp_path: Path) -> None:
+    db = tmp_path / "old.db"
+    with closing(sqlite3.connect(db)) as conn:  # the events table as ruleproof 0.1.x wrote it
+        conn.executescript(
+            "CREATE TABLE sessions (key INTEGER PRIMARY KEY, id TEXT NOT NULL, agent TEXT NOT"
+            " NULL, path TEXT NOT NULL, cwd TEXT, started_at TEXT, model TEXT, event_count"
+            " INTEGER NOT NULL, warnings TEXT NOT NULL, UNIQUE (id, path));"
+            "CREATE TABLE events (session INTEGER NOT NULL REFERENCES sessions(key) ON DELETE"
+            " CASCADE, session_id TEXT NOT NULL, idx INTEGER NOT NULL, kind TEXT NOT NULL,"
+            " timestamp TEXT, actor TEXT NOT NULL, tool TEXT, text TEXT NOT NULL, path TEXT,"
+            " action TEXT, exit_code INTEGER, is_error INTEGER, output TEXT NOT NULL,"
+            " PRIMARY KEY (session, idx));"
+        )
+    s = _session("s1", 1)
+    s.events.append(Event(1, EventKind.TOOL, "audit", tool="Agent", input='{"effort": "high"}'))
+    write_sqlite([s], db)
+    with closing(sqlite3.connect(db)) as conn:
+        rows = conn.execute("SELECT kind, input FROM events ORDER BY idx").fetchall()
+    assert rows == [("user", ""), ("tool", '{"effort": "high"}')]

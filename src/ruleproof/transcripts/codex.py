@@ -39,6 +39,7 @@ from ruleproof.transcripts._util import (
     sort_by_time,
     str_or_none,
     summarize,
+    tool_input,
     warn,
 )
 
@@ -216,7 +217,8 @@ def _response_item(st: _State, p: dict[str, Any], ts: str | None) -> None:
         elif name == "apply_patch":
             st.pending[call_id] = [] if st.items_mode else _patch_events(st, source, ts)
         else:
-            st.pending[call_id] = [_add(st, Event(0, EventKind.TOOL, summarize(source), ts, name))]
+            ev = Event(0, EventKind.TOOL, summarize(source), ts, name, input=tool_input(source))
+            st.pending[call_id] = [_add(st, ev)]
     elif ptype == "local_shell_call":
         action = p.get("action") or {}
         cmd = action.get("command")
@@ -258,7 +260,8 @@ def _function_call(
         patch = args.get("input", args.get("patch"))
         if isinstance(patch, str):
             return [] if st.items_mode else _patch_events(st, patch, ts)
-    return [_add(st, Event(0, EventKind.TOOL, summarize(args or raw), ts, name))]
+    ev = Event(0, EventKind.TOOL, summarize(args or raw), ts, name, input=tool_input(args or raw))
+    return [_add(st, ev)]
 
 
 def _patch_events(st: _State, patch: str, ts: str | None) -> list[Event]:
@@ -423,7 +426,8 @@ def _exec_json(st: _State, rec: dict[str, Any]) -> None:
             _add(st, Event(0, EventKind.ASSISTANT, text, ts))
     elif itype == "mcp_tool_call":
         tool = ".".join(str(item[k]) for k in ("server", "tool") if item.get(k))
-        ev = Event(0, EventKind.TOOL, summarize(item.get("arguments")), ts, tool or "mcp")
+        args = item.get("arguments")
+        ev = Event(0, EventKind.TOOL, summarize(args), ts, tool or "mcp", input=tool_input(args))
         ev.is_error = item.get("status") == "failed" or None
         _add(st, ev)
     elif itype == "web_search":

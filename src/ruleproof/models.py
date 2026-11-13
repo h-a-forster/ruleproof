@@ -45,6 +45,7 @@ class Event:
     output: str = ""  # COMMAND/TOOL: truncated to OUTPUT_LIMIT
     is_error: bool | None = None  # the agent runtime flagged the call as failed
     actor: str = "main"  # "main", or a subagent id for events from subagent transcripts
+    input: str = ""  # TOOL: the call's full input (JSON or raw text), truncated to OUTPUT_LIMIT
 
 
 @dataclass(slots=True)

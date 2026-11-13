@@ -42,11 +42,11 @@ Every parser emits a `Session` whose `events` are ordered and indexed from 0. Fi
 
 | Kind | Meaning | Key fields |
 | --- | --- | --- |
-| `user` | user message | `text` |
+| `user` | a message the person typed (not text the harness injects as a user turn) | `text` |
 | `assistant` | assistant prose | `text` |
 | `command` | shell command | `text` (the command line, unwrapped from `bash -lc` etc.), `exit_code` (None if unknown), `output`, `is_error` |
 | `edit` | file written / edited / deleted by a tool | `path` (as recorded), `action` |
-| `tool` | any other tool call | `tool`, `text` (short input summary), `output` |
+| `tool` | any other tool call | `tool`, `text` (short input summary), `input` (the full input), `output` |
 
 Subagent transcripts (Claude Code `<session>/subagents/**.jsonl`) are merged by timestamp
 with `actor` set to the subagent id. Parsers never raise on malformed lines: they skip the
@@ -57,7 +57,11 @@ Supported formats:
 - **Claude Code**: `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` and headless
   `claude -p --output-format stream-json` output. Shell tools: `Bash`, `PowerShell`.
   Edit tools: `Write`, `Edit`, `MultiEdit`, `NotebookEdit`. Failed shell commands come back
-  as `is_error: true` with content starting `Exit code N`.
+  as `is_error: true` with content starting `Exit code N`. User events are prompts, messages
+  queued while the agent worked (`queued_command` attachments) and slash commands (as
+  `/name args`); user turns whose `origin.kind` is not `human` (background-task
+  notifications, messages from other sessions) and harness markup (`<local-command-stdout>`,
+  `<system-reminder>`) are not.
 - **Codex CLI**: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (and `codex exec --json`
   output). Handles `function_call` `shell` / `exec_command`, `local_shell_call`,
   `custom_tool_call` `apply_patch`, code-mode `exec` cells that call
@@ -103,6 +107,7 @@ Every other line is one event, in the order it happened:
 | `exit_code` | integer | `command` | exit status; leave it out when unknown (results then come from the output, or are `unverified`) |
 | `output` | string | `command`, `tool` | the output; truncated to 4000 characters (head and tail kept) |
 | `is_error` | boolean | `command`, `edit`, `tool` | the agent runtime reported the call as failed; a failed edit changed nothing |
+| `input` | string | `tool` | the call's full input (JSON for structured inputs); truncated to 4000 characters. `forbid-tool`'s `input` matches it, else `text` |
 
 Fields are read regardless of `kind`, but the checks only use them as listed. `index` is
 ignored: events are numbered in file order. A line that is not a JSON object, has an unknown
@@ -174,11 +179,12 @@ annotation's file and line. Annotations in a nested instruction file (`pkg/AGENT
 | `forbid-text` | diff | `pattern` (regex, required), `paths` (default all), `except`, `ignore_case`, `redact` (hide matches in evidence) | an added line matches |
 | `require-text` | diff | `pattern` (regex, required), `paths`, `new_files_only` (default true) | a new file in scope lacks a match |
 | `max-diff` | diff | `max_files`, `max_lines` (added + removed), `except` | the diff is larger |
-| `forbid-command` | transcript | `command` (regex, required), `ignore_case`, `match_quoted` (default false: quoted strings and heredocs are ignored) | a command matches |
-| `require-command` | transcript | `command` (regex, required), `must_succeed` (default true), `after_last_edit` (default true), `when_paths` (globs), `edit_paths` / `ignore_edit_paths` (which edits count), `match_quoted` (as in `forbid-command`) | no matching command ran (after the last counted edit; with exit 0). Exit unknown → `unverified` |
+| `forbid-command` | transcript | `command` (regex, required), `ignore_case`, `match_quoted` (default false: quoted strings and heredocs are ignored), `tool` (shell tool name), `unless_user` / `unless_after` (allowed after a matching user message / command) | a command matches |
+| `require-command` | transcript | `command` (regex, required), `must_succeed` (default true), `after_last_edit` (default true), `when_paths` (globs), `edit_paths` / `ignore_edit_paths` (which edits count), `match_quoted` (as in `forbid-command`), `after_tool` (count from the last call to a matching tool instead) | no matching command ran (after the last counted edit; with exit 0). Exit unknown → `unverified` |
 | `forbid-edit` | transcript | `paths` (globs), `outside_repo` (bool) | the agent edited a matching path (even if later reverted), or any path outside the repo |
-| `forbid-tool` | transcript | `tool` (regex, required) | the agent called a matching tool |
+| `forbid-tool` | transcript | `tool` (regex, required), `input` (regex on the call's input) | the agent called a matching tool |
 | `forbid-message` | transcript | `pattern` (regex, required), `ignore_case`, `subagents` (default false: main agent only) | an assistant message matches |
+| `max-command-output` | transcript | `max_chars` (int, required), `tool` (shell tool name) | a command printed more than `max_chars` characters |
 | `claims` | transcript | `claims` (list; default all), `ignore_edit_paths` | the agent claims a result (tests pass, lint clean, types check, build works, formatted, committed, pushed) with no matching successful command after its last edit |
 
 `skip` means an input was missing. `unverified` means the evidence exists but cannot be
@@ -271,4 +277,7 @@ tools (`Bash`, `PowerShell`) become commands, file tools (`Write`, `Edit`, `Mult
 `NotebookEdit`) edits, and anything else a tool call. An edit of a file that does not exist
 yet is an add; with `--base REF` (default `HEAD`), editing a file that exists now but not at
 `REF` also counts as an add, so a rule against modifying existing files does not stop the
-agent from editing a file it created in this session.
+agent from editing a file it created in this session. A `forbid-command` rule with
+`unless_user` or `unless_after` is run on the transcript so far (`transcript_path`) plus the
+proposed call, and only the proposed call can fail it; without a readable transcript there is
+no earlier request or check, so such a rule denies.

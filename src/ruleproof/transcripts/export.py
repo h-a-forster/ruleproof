@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS events (
     exit_code INTEGER,
     is_error INTEGER,
     output TEXT NOT NULL,
+    input TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (session, idx)
 );
 CREATE INDEX IF NOT EXISTS events_kind ON events(kind);
@@ -123,6 +124,9 @@ def write_sqlite(sessions: list[Session], path: Path) -> None:
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(_SCHEMA)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+        if "input" not in columns:  # a database written by ruleproof 0.1.x
+            conn.execute("ALTER TABLE events ADD COLUMN input TEXT NOT NULL DEFAULT ''")
         with conn:
             for s in sessions:
                 conn.execute("DELETE FROM sessions WHERE id = ? AND path = ?", (s.id, s.path))
@@ -141,7 +145,9 @@ def write_sqlite(sessions: list[Session], path: Path) -> None:
                     ),
                 )
                 conn.executemany(
-                    "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO events (session, session_id, idx, kind, timestamp, actor, tool,"
+                    " text, path, action, exit_code, is_error, output, input)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         (
                             cur.lastrowid,
@@ -157,6 +163,7 @@ def write_sqlite(sessions: list[Session], path: Path) -> None:
                             e.exit_code,
                             None if e.is_error is None else int(e.is_error),
                             e.output,
+                            e.input,
                         )
                         for e in s.events
                     ],

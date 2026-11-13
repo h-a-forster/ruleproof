@@ -532,6 +532,39 @@ def test_pretool_rules_option(pre_repo: Path, tmp_path: Path) -> None:
     assert "no-push" in decision["permissionDecisionReason"]
 
 
+def test_pretool_reads_the_transcript_for_rules_that_wait_for_the_user(pre_repo: Path) -> None:
+    (pre_repo / "ruleproof.toml").write_text(
+        'version = 1\n[[rule]]\nid = "push-when-asked"\ncheck = "forbid-command"\n'
+        "command = 'git push'\nunless_user = '\\bpush\\b'\n",
+        encoding="utf-8",
+    )
+
+    def transcript(*records: dict[str, Any]) -> None:
+        lines = [json.dumps({"type": "user", "sessionId": "s1", **r}) for r in records]
+        (pre_repo / "t.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    transcript({"message": {"content": "fix the bug"}})
+    reason, _ = pretool(pre_repo, "Bash", {"command": "git push origin main"})
+    assert reason is not None and "push-when-asked" in reason
+    assert 'ran "git push origin main"' in reason
+    past_push = {  # an earlier unrequested push does not deny later, unrelated calls
+        "type": "assistant",
+        "sessionId": "s1",
+        "message": {
+            "content": [
+                {"type": "tool_use", "id": "t0", "name": "Bash", "input": {"command": "git push"}}
+            ]
+        },
+    }
+    (pre_repo / "t.jsonl").write_text(json.dumps(past_push) + "\n", encoding="utf-8")
+    assert pretool(pre_repo, "Bash", {"command": "git status"}) == (None, "")
+    transcript({"message": {"content": "fix the bug"}}, {"message": {"content": "now push it"}})
+    assert pretool(pre_repo, "Bash", {"command": "git push origin main"}) == (None, "")
+    (pre_repo / "t.jsonl").unlink()  # no transcript: no request to push
+    reason, err = pretool(pre_repo, "Bash", {"command": "git push"})
+    assert reason is not None and "transcript rules skipped" in err
+
+
 EXISTING_TESTS_RULES = """version = 1
 
 [[rule]]

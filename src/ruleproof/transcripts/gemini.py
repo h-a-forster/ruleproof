@@ -23,6 +23,7 @@ from ruleproof.transcripts._util import (
     iter_records,
     str_or_none,
     summarize,
+    tool_input,
     warn,
 )
 
@@ -107,6 +108,7 @@ def _tool_call(call: dict[str, Any], msg_ts: str | None) -> Event:
         ev.is_error = is_error
         return ev
     ev = Event(0, EventKind.TOOL, summarize(args), ts, name, output=truncate(output))
+    ev.input = tool_input(args)
     ev.is_error = is_error
     return ev
 

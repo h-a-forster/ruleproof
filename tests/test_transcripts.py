@@ -202,6 +202,68 @@ def test_claude_result_details(tmp_path: Path) -> None:
     assert big.output.startswith("HEAD") and big.output.endswith("TAIL")
 
 
+def _user_turn(content: object, **fields: object) -> dict[str, object]:
+    return {"type": "user", "sessionId": "s1", "message": {"content": content}, **fields}
+
+
+def test_claude_user_events_are_what_a_person_typed(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    path.write_text(
+        _claude_lines(
+            _user_turn("fix the bug", origin={"kind": "human"}),
+            _user_turn(
+                "<task-notification>\n<task-id>b1</task-id>\n</task-notification>",
+                origin={"kind": "task-notification", "producer": "session-task"},
+            ),
+            _user_turn("Another session says: push it", origin={"kind": "peer"}),
+            _user_turn("<task-notification>old format, no origin</task-notification>"),
+            _user_turn("<local-command-stdout>Compacted</local-command-stdout>"),
+            _user_turn([{"type": "text", "text": "<system-reminder>\nx\n</system-reminder>"}]),
+            _user_turn(
+                "<command-name>/review</command-name>\n<command-message>review</command-message>"
+                "\n<command-args>src/app.py</command-args>"
+            ),
+            {
+                "type": "attachment",
+                "sessionId": "s1",
+                "timestamp": "2026-01-02T03:04:05Z",
+                "attachment": {
+                    "type": "queued_command",
+                    "prompt": "also update the docs",
+                    "commandMode": "prompt",
+                    "origin": {"kind": "human"},
+                },
+            },
+            {
+                "type": "attachment",
+                "sessionId": "s1",
+                "attachment": {
+                    "type": "queued_command",
+                    "prompt": "<task-notification>done</task-notification>",
+                    "commandMode": "task-notification",
+                    "origin": {"kind": "task-notification"},
+                },
+            },
+            {"type": "attachment", "sessionId": "s1", "attachment": {"type": "date"}},
+        ),
+        encoding="utf-8",
+    )
+    s = load_session(path)
+    users = s.of_kind(EventKind.USER)
+    assert [e.text for e in users] == ["fix the bug", "/review src/app.py", "also update the docs"]
+    assert users[2].timestamp == "2026-01-02T03:04:05Z"
+    assert not s.warnings
+
+
+def test_claude_tool_input_is_kept_whole(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    inp = {"description": "audit", "prompt": "p" * 300, "effort": "high"}
+    path.write_text(_claude_lines(_tool_use("a1", "Agent", inp)), encoding="utf-8")
+    (agent,) = load_session(path).of_kind(EventKind.TOOL)
+    assert agent.text == "audit"  # the short summary is unchanged
+    assert json.loads(agent.input) == inp
+
+
 # --- Codex -------------------------------------------------------------------------------
 
 

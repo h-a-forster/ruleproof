@@ -11,6 +11,7 @@ from typing import Any, TextIO
 
 from ruleproof.errors import TranscriptError
 from ruleproof.models import Event, Session
+from ruleproof.transcripts._shell import truncate
 
 BOM = chr(0xFEFF)
 MAX_WARNINGS = 50
@@ -164,6 +165,19 @@ def summarize(value: object) -> str:
         return one_line(json.dumps(value, ensure_ascii=False, sort_keys=True))
     except (TypeError, ValueError):
         return one_line(str(value))
+
+
+def tool_input(value: object) -> str:
+    """The full input of a tool call as compact JSON (a string is kept as is), truncated."""
+    if isinstance(value, str):
+        return truncate(value)
+    if value is None or value == {}:
+        return ""
+    try:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        text = str(value)
+    return truncate(text)
 
 
 def content_text(content: object) -> str:

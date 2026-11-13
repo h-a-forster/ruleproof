@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from ruleproof import paths
 from ruleproof.checks import Param, register
 from ruleproof.checks._common import (
@@ -12,6 +14,7 @@ from ruleproof.checks._common import (
     commands_run,
     compile_regex,
     counted_edits,
+    did_not_run,
     edit_relpath,
     edits_made,
     globs_match,
@@ -23,6 +26,7 @@ from ruleproof.checks._common import (
     ran_after,
 )
 from ruleproof.models import Context, Event, EventKind, Evidence, Rule, RuleResult
+from ruleproof.transcripts._shell import full_length
 
 _MATCH_QUOTED = Param(
     "bool",
@@ -35,6 +39,10 @@ def _actor(ev: Event) -> str:
     return "" if ev.actor == "main" else f" (subagent {ev.actor})"
 
 
+def _optional_regex(pattern: str | None, ignore_case: bool = False) -> re.Pattern[str] | None:
+    return compile_regex(pattern, ignore_case) if pattern else None
+
+
 @register(
     "forbid-command",
     needs={"session"},
@@ -42,6 +50,13 @@ def _actor(ev: Event) -> str:
         "command": Param("regex", required=True, doc="command lines that must not run"),
         "ignore_case": Param("bool", default=False, doc="match case-insensitively"),
         "match_quoted": _MATCH_QUOTED,
+        "tool": Param("regex", doc="only commands run by a shell tool whose name matches"),
+        "unless_user": Param(
+            "regex", doc="allowed once an earlier user message matches (the user asked for it)"
+        ),
+        "unless_after": Param(
+            "regex", doc="allowed once an earlier command matches (a required check ran first)"
+        ),
     },
     doc=(
         "Fails when the agent (or a subagent) ran a shell command matching `command`. By "
@@ -51,17 +66,40 @@ def _actor(ev: Event) -> str:
         'matched as commands; so are `eval`, `ssh host "..."`, `echo ... | sh` and the code '
         "of `python -c`. Comments are ignored. Set `match_quoted = true` to match the raw "
         "command line. Commands that never ran (denied at the permission prompt or blocked by "
-        "a hook) do not count; a command that ran and failed does."
+        "a hook) do not count; a command that ran and failed does. `tool` limits the rule to "
+        "one shell (`^Bash$`). `unless_user` allows a command once an earlier message from the "
+        "user (for a subagent: also its prompt) matches, for steps that need the user's "
+        "go-ahead; `unless_after` allows it once an earlier command matches, for steps that "
+        "need a check first. Both are searched case-insensitively."
     ),
 )
 def forbid_command(rule: Rule, ctx: Context) -> RuleResult:
+    assert ctx.session is not None
     pattern: str = rule.params["command"]
     rx = compile_regex(pattern, rule.params["ignore_case"])
-    hits = [
-        ev
-        for ev in commands_run(ctx)
-        if command_matches(rx, ev.text, rule.params["match_quoted"], is_powershell(ev, ctx))
-    ]
+    quoted_too: bool = rule.params["match_quoted"]
+    tool_rx = _optional_regex(rule.params["tool"])
+    user_rx = _optional_regex(rule.params["unless_user"], ignore_case=True)
+    after_rx = _optional_regex(rule.params["unless_after"], ignore_case=True)
+    asked: set[str] = set()  # actors whose user messages so far match `unless_user`
+    checked = False  # a command matching `unless_after` ran
+    hits: list[Event] = []
+    for ev in ctx.session.events:
+        if ev.kind is EventKind.USER:
+            if user_rx is not None and user_rx.search(ev.text):
+                asked.add(ev.actor)
+            continue
+        if ev.kind is not EventKind.COMMAND or did_not_run(ev):
+            continue
+        ps = is_powershell(ev, ctx)
+        if (tool_rx is None or tool_rx.search(ev.tool or "")) and command_matches(
+            rx, ev.text, quoted_too, ps
+        ):
+            allowed = (user_rx is not None and bool(asked & {"main", ev.actor})) or checked
+            if not allowed:
+                hits.append(ev)
+        if after_rx is not None and command_matches(after_rx, ev.text, quoted_too, ps):
+            checked = True
     if not hits:
         return RuleResult(rule, "pass", f"no command matches {quoted(pattern)}")
     evidence = [
@@ -90,6 +128,9 @@ def forbid_command(rule: Rule, ctx: Context) -> RuleResult:
         ),
         "ignore_edit_paths": Param("glob_list", default=[], doc="edits that never count"),
         "match_quoted": _MATCH_QUOTED,
+        "after_tool": Param(
+            "regex", doc="required after the last call to a matching tool, instead of the last edit"
+        ),
     },
     doc=(
         "Fails when no command matching `command` ran after the agent's last counted edit, or "
@@ -103,7 +144,10 @@ def forbid_command(rule: Rule, ctx: Context) -> RuleResult:
         "and an unknown exit code is judged from the output (pytest, jest, cargo, ... "
         "summaries) or reported as `unverified`. Not required when nothing was edited and "
         "the diff has no changes in scope; with `when_paths`, only when a changed or edited "
-        "file matches; for a scoped rule, only when a file in its scope changed."
+        "file matches; for a scoped rule, only when a file in its scope changed. With "
+        "`after_tool` the command must run after the last call to a tool whose name matches "
+        "(`^Workflow$`) instead of after the last edit, and is not required when no such "
+        "call was made."
     ),
 )
 def require_command(rule: Rule, ctx: Context) -> RuleResult:
@@ -124,6 +168,9 @@ def require_command(rule: Rule, ctx: Context) -> RuleResult:
     ]
     last_edit: Event | None = None
     last_rel: str | None = None
+    after_tool: str | None = rule.params["after_tool"]
+    if after_tool:
+        return _require_after_tool(rule, ctx, runs, after_tool)
     if rule.params["after_last_edit"]:
         edits = counted_edits(
             ctx, rule.scope, rule.params["edit_paths"], rule.params["ignore_edit_paths"]
@@ -155,6 +202,39 @@ def require_command(rule: Rule, ctx: Context) -> RuleResult:
     ran = f"ran {quoted(last.text)}{where}"
     evidence = [
         Evidence(f"last matching run{_actor(last)}", event=last.index, excerpt=clip(last.text))
+    ]
+    if not rule.params["must_succeed"]:
+        return RuleResult(rule, "pass", ran, evidence)
+    outcome, reason = command_outcome(last)
+    if outcome == "fail":
+        return RuleResult(rule, "fail", f"{ran} but it failed ({reason})", evidence)
+    return RuleResult(rule, outcome, f"{ran} ({reason})", evidence)
+
+
+def _require_after_tool(rule: Rule, ctx: Context, runs: list[Event], after_tool: str) -> RuleResult:
+    assert ctx.session is not None
+    trx = compile_regex(after_tool)
+    calls = [
+        ev
+        for ev in ctx.session.events
+        if ev.kind in _TOOL_KINDS and ev.tool and trx.search(ev.tool) and not did_not_run(ev)
+    ]
+    if not calls:
+        return RuleResult(
+            rule, "pass", f"not required: no call to a tool matching {quoted(after_tool)}"
+        )
+    anchor = calls[-1]
+    window = [ev for ev in runs if ev.index > anchor.index]
+    call = Evidence(f"last {anchor.tool} call{_actor(anchor)}", event=anchor.index)
+    if not window:
+        pattern = quoted(rule.params["command"])
+        summary = f"no command matching {pattern} ran after {anchor.tool} (#{anchor.index})"
+        return RuleResult(rule, "fail", summary, [call])
+    last = window[-1]
+    ran = f"ran {quoted(last.text)} after {anchor.tool} (#{anchor.index})"
+    evidence = [
+        call,
+        Evidence(f"last matching run{_actor(last)}", event=last.index, excerpt=clip(last.text)),
     ]
     if not rule.params["must_succeed"]:
         return RuleResult(rule, "pass", ran, evidence)
@@ -244,23 +324,37 @@ _TOOL_KINDS = (EventKind.TOOL, EventKind.COMMAND, EventKind.EDIT)
 @register(
     "forbid-tool",
     needs={"session"},
-    params={"tool": Param("regex", required=True, doc="tool names the agent must not call")},
+    params={
+        "tool": Param("regex", required=True, doc="tool names the agent must not call"),
+        "input": Param("regex", doc="only calls whose input matches"),
+    },
     doc=(
         "Fails when the agent or a subagent called a tool whose name matches `tool` (searched "
         "case-sensitively in the agent's own tool name: `WebFetch`, `mcp__github__.*`, "
         "`apply_patch`, ...). Shell and file-edit tools count as well as other tools, and so "
-        "does a call that was denied or failed: the agent still tried."
+        "does a call that was denied or failed: the agent still tried. With `input`, only "
+        "calls whose input matches count: the tool's input as JSON with sorted keys "
+        '(`{"effort": "high", "prompt": ...}`), the command line of a shell tool, the path of '
+        "a file edit. A negative lookahead forbids calls that lack a setting: "
+        "`input = '^(?![\\s\\S]*\"effort\")'`."
     ),
 )
 def forbid_tool(rule: Rule, ctx: Context) -> RuleResult:
     assert ctx.session is not None
     pattern: str = rule.params["tool"]
     rx = compile_regex(pattern)
+    input_rx = _optional_regex(rule.params["input"])
     hits = [
-        ev for ev in ctx.session.events if ev.kind in _TOOL_KINDS and ev.tool and rx.search(ev.tool)
+        ev
+        for ev in ctx.session.events
+        if ev.kind in _TOOL_KINDS
+        and ev.tool
+        and rx.search(ev.tool)
+        and (input_rx is None or input_rx.search(ev.input or ev.text or ev.path or ""))
     ]
     if not hits:
-        return RuleResult(rule, "pass", f"no tool call matches {quoted(pattern)}")
+        where = f" with input matching {quoted(rule.params['input'])}" if input_rx else ""
+        return RuleResult(rule, "pass", f"no tool call matches {quoted(pattern)}{where}")
     evidence = [
         Evidence(f"called {ev.tool}{_actor(ev)}", event=ev.index, excerpt=clip(ev.text) or None)
         for ev in hits
@@ -304,4 +398,47 @@ def forbid_message(rule: Rule, ctx: Context) -> RuleResult:
         return RuleResult(rule, "pass", f"no message matches {quoted(pattern)}")
     verb = "matches" if len(evidence) == 1 else "match"
     summary = f"{plural(len(evidence), 'assistant message')} {verb} {quoted(pattern)}"
+    return RuleResult(rule, "fail", summary, cap(evidence))
+
+
+@register(
+    "max-command-output",
+    needs={"session"},
+    params={
+        "max_chars": Param(
+            "int", required=True, doc="most output characters one command may print"
+        ),
+        "tool": Param("regex", doc="only commands run by a shell tool whose name matches"),
+    },
+    doc=(
+        "Fails when a shell command the agent ran printed more than `max_chars` characters "
+        '(stdout and stderr as the transcript records them), for rules like "send long output '
+        'to a file and print only what answers the question". The length is measured before '
+        "ruleproof truncates stored output, and a Claude Code result kept on disk because it "
+        "was too large counts at its full size. Output of other tools (file reads, searches) "
+        "does not count."
+    ),
+)
+def max_command_output(rule: Rule, ctx: Context) -> RuleResult:
+    limit: int = rule.params["max_chars"]
+    if limit < 0:
+        return RuleResult(rule, "skip", "max_chars must not be negative")
+    tool_rx = _optional_regex(rule.params["tool"])
+    hits: list[tuple[Event, int]] = []
+    for ev in commands_run(ctx):
+        if tool_rx is not None and not tool_rx.search(ev.tool or ""):
+            continue
+        size = full_length(ev.output)
+        if size > limit:
+            hits.append((ev, size))
+    if not hits:
+        return RuleResult(rule, "pass", f"no command printed more than {limit} characters")
+    evidence = [
+        Evidence(f"printed {size} characters{_actor(ev)}", event=ev.index, excerpt=clip(ev.text))
+        for ev, size in hits
+    ]
+    biggest = max(size for _, size in hits)
+    summary = (
+        f"{plural(len(hits), 'command')} printed more than {limit} characters (largest {biggest})"
+    )
     return RuleResult(rule, "fail", summary, cap(evidence))

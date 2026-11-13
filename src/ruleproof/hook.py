@@ -314,9 +314,49 @@ def evaluate_pretool(
     event = session.events[0]
     if event.action == "modify" and any(r.check == "forbid-change" for r in rules):
         _reclassify_new_file(event, repo, cwd, base)
-    results = run_rules(rules, Context(repo=repo, diff=None, session=session))
+    with_history = [r for r in rules if _needs_history(r)]
+    alone = [r for r in rules if not _needs_history(r)]
+    results = run_rules(alone, Context(repo=repo, diff=None, session=session))
+    if with_history:
+        results += _judge_with_history(with_history, session, payload, repo, stderr)
     failed = [r for r in results if r.status == "fail"]
     return deny_reason(failed) if failed else None
+
+
+def _needs_history(rule: Rule) -> bool:
+    """A rule whose verdict on the proposed call depends on earlier messages or commands."""
+    return rule.check == "forbid-command" and bool(
+        rule.params.get("unless_user") or rule.params.get("unless_after")
+    )
+
+
+def _judge_with_history(
+    rules: list[Rule], proposed: Session, payload: Mapping[str, Any], repo: Path, stderr: TextIO
+) -> list[RuleResult]:
+    """Run ``rules`` on the transcript so far plus the proposed call; only the call can fail.
+
+    Without a readable transcript there is no earlier user message or command, so a rule
+    that waits for one denies the call.
+    """
+    from ruleproof.checks._common import quoted
+    from ruleproof.engine import run_rules
+    from ruleproof.models import Context
+
+    history = _load_transcript(payload, stderr)
+    session = history if history is not None else proposed
+    if history is not None:
+        session.events = [*history.events, proposed.events[0]]
+        for i, ev in enumerate(session.events):
+            ev.index = i
+    last = len(session.events) - 1
+    out = []
+    for result in run_rules(rules, Context(repo=repo, diff=None, session=session)):
+        evidence = [e for e in result.evidence if e.event == last]
+        if result.status == "fail" and evidence:
+            result.evidence = evidence
+            result.summary = f"ran {quoted(session.events[last].text)}"
+            out.append(result)
+    return out
 
 
 def _nearest_git_root(cwd: Path) -> Path:
@@ -386,8 +426,11 @@ def proposed_call_session(payload: Mapping[str, Any], cwd: str) -> Session:
         action: EditAction = "modify" if full.exists() else "add"
         event = Event(0, EventKind.EDIT, text=path, tool=tool, path=path, action=action)
     else:
+        from ruleproof.transcripts._shell import truncate
+
         summary = json.dumps(tool_input, ensure_ascii=False, sort_keys=True, default=str)
         event = Event(0, EventKind.TOOL, text=one_line(summary, 300), tool=tool)
+        event.input = truncate(summary)
 
     session_id = payload.get("session_id")
     transcript = payload.get("transcript_path")

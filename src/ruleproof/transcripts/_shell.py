@@ -47,11 +47,39 @@ def truncate(text: str, limit: int = OUTPUT_LIMIT) -> str:
     """Cap ``text`` at ``limit`` characters, keeping its head and tail."""
     if len(text) <= limit:
         return text
-    marker = f"\n… [{len(text) - limit} chars truncated] …\n"
-    keep = max(limit - len(marker), 0)
+    dropped = len(text) - limit
+    while True:  # the marker states exactly how many characters it replaces
+        marker = f"\n… [{dropped} chars truncated] …\n"
+        keep = max(limit - len(marker), 0)
+        if len(text) - keep == dropped:
+            break
+        dropped = len(text) - keep
     head = keep * 2 // 3
     tail = keep - head
     return text[:head] + marker + (text[-tail:] if tail else "")
+
+
+_TRUNCATED_RE = re.compile(r"\n… \[(\d+) chars truncated\] …\n")
+# Claude Code keeps a large tool result on disk and gives the model a preview.
+_PERSISTED_RE = re.compile(
+    r"^\s*<persisted-output>\s*Output too large \((\d+(?:\.\d+)?)\s*(B|KB|MB)\)"
+)
+_UNITS = {"B": 1, "KB": 1024, "MB": 1024 * 1024}
+
+
+def full_length(output: str) -> int:
+    """Length of a command's output before truncation, in characters.
+
+    Understands ``truncate``'s marker and Claude Code's ``<persisted-output>`` header, whose
+    size is in bytes (close to characters for mostly-ASCII output).
+    """
+    persisted = _PERSISTED_RE.match(output)
+    if persisted:
+        return round(float(persisted.group(1)) * _UNITS[persisted.group(2)])
+    m = _TRUNCATED_RE.search(output)
+    if m:
+        return len(output) - len(m.group(0)) + int(m.group(1))
+    return len(output)
 
 
 def unwrap(command: str | Sequence[str]) -> str:

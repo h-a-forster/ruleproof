@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `forbid-command` takes `tool` (one shell only), `unless_user` (allowed once the user's
+  messages mention it, for steps that need a go-ahead) and `unless_after` (allowed once a
+  check command ran first, e.g. listing junctions before a recursive delete).
+- `forbid-tool` takes `input`, a regex on the call's full input, so rules can forbid calls
+  with, or without, a setting (`Agent` calls that set no `effort`).
+- `require-command` takes `after_tool`: the command must run after the last call to a
+  matching tool (a notification after a `Workflow`), instead of after the last edit.
+- New check `max-command-output`: a shell command printed more than `max_chars` characters.
+- Tool events keep the call's full input (`input` in JSON, SQLite and generic JSONL).
+
+### Fixed
+
+- Claude Code: messages typed while the agent worked (`queued_command` attachments) are user
+  events; background-task notifications, messages from other sessions, local command output
+  and system reminders are no longer user events; slash commands read as `/name args`.
+- The truncation marker in stored output states exactly how many characters it replaced.
+- Checks read each command line once per run instead of once per rule: 33 rules on a 25 MB
+  Claude Code session took 37 s instead of 194 s.
+
 ## [0.1.1] - 2026-10-30
 
 ### Added

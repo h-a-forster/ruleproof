@@ -146,6 +146,7 @@ confirm" to block.
 | [`forbid-edit`](#forbid-edit) | transcript |
 | [`forbid-tool`](#forbid-tool) | transcript |
 | [`forbid-message`](#forbid-message) | transcript |
+| [`max-command-output`](#max-command-output) | transcript |
 | [`claims`](#claims) | transcript |
 
 ### forbid-change
@@ -263,13 +264,33 @@ Fails when the agent ran a matching shell command. The command line is unwrapped
 | `command` | regex | required | Commands that must not run. |
 | `ignore_case` | bool | `false` | Case-insensitive match. |
 | `match_quoted` | bool | `false` | Also match inside quoted strings and heredocs (commit messages, `echo` text). |
+| `tool` | regex | all shells | Only commands run by a shell tool whose name matches (`^Bash$`, `^PowerShell$`). |
+| `unless_user` | regex | none | Allow the command once an earlier user message matches (case-insensitive): steps that need the user's go-ahead. A subagent's prompt counts as its user message, and the main user's messages count for subagents. |
+| `unless_after` | regex | none | Allow the command once an earlier command matches (case-insensitive): steps that need a check first. |
 
 ```toml
 [[rule]]
 id = "no-skipped-hooks"
 check = "forbid-command"
 command = '\bgit\s+(commit|push)\b.*\s--no-verify\b'
+
+[[rule]]
+id = "push-when-asked"
+description = "Push only when the user asks."
+check = "forbid-command"
+command = '\bgit\s+push\b'
+unless_user = '\bpush'
+
+[[rule]]
+id = "check-links-before-deleting"
+description = "Before a recursive delete, list the junctions and symlinks inside."
+check = "forbid-command"
+command = '\brm\s+-\w*r|\bRemove-Item\b.*-Recurse'
+unless_after = 'ReparsePoint'
 ```
+
+`unless_user` is a keyword test, not consent: "don't push yet" matches `\bpush` too. Use it
+for steps that are fine once the user has raised them, and read its passes with that in mind.
 
 ### require-command
 
@@ -286,6 +307,7 @@ counted edit and exit 0. If it ran but the transcript has no exit code, the resu
 | `edit_paths` | globs | all | Edits that count for `after_last_edit`. |
 | `ignore_edit_paths` | globs | `[]` | Edits that do not count (docs, notes). |
 | `match_quoted` | bool | `false` | Also match inside quoted strings and heredocs (commit messages, `echo` text). |
+| `after_tool` | regex | none | The command must run after the last call to a tool whose name matches, instead of after the last edit; not required when no such call was made. |
 
 ```toml
 [[rule]]
@@ -294,6 +316,14 @@ check = "require-command"
 command = '\bpytest\b'
 when_paths = ["src/**", "tests/**"]
 ignore_edit_paths = ["**/*.md"]
+
+[[rule]]
+id = "notify-after-workflow"
+description = "Send a done notification when a workflow has finished."
+check = "require-command"
+command = 'notify\.py\s+done'
+after_tool = '^Workflow$'
+must_succeed = false
 ```
 
 ### forbid-edit
@@ -324,12 +354,41 @@ Fails when the agent called a matching tool. Tool names are the agent's own: `We
 | Parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `tool` | regex | required | Tool names that must not be called. |
+| `input` | regex | any input | Only calls whose input matches: the tool's input as JSON with sorted keys, the command line of a shell tool, the path of a file edit. |
 
 ```toml
 [[rule]]
 id = "no-web"
 check = "forbid-tool"
 tool = '^(WebFetch|WebSearch|web_fetch|google_web_search)$'
+
+[[rule]]
+id = "subagent-effort"
+description = "Set the effort on every subagent call."
+check = "forbid-tool"
+tool = '^Agent$'
+input = '^(?![\s\S]*"effort")'  # calls that do not set it
+```
+
+### max-command-output
+
+Fails when a shell command printed more than `max_chars` characters (stdout and stderr as the
+transcript records them), for rules like "send long output to a file and print only what
+answers the question". The length is measured before ruleproof truncates stored output, and a
+Claude Code result kept on disk because it was too large counts at its full size (from its
+`Output too large (N KB)` header). Output of other tools (file reads, searches) does not count.
+
+| Parameter | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `max_chars` | int | required | Most characters one command may print. |
+| `tool` | regex | all shells | Only commands run by a shell tool whose name matches. |
+
+```toml
+[[rule]]
+id = "short-output"
+severity = "warning"
+check = "max-command-output"
+max_chars = 2000
 ```
 
 ### forbid-message

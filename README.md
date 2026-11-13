@@ -146,6 +146,7 @@ Or next to the prose they enforce, invisible in rendered Markdown:
 | `forbid-edit` | transcript | the agent's file tools touched a path (or anything outside the repo) |
 | `forbid-tool` | transcript | the agent called a matching tool |
 | `forbid-message` | transcript | the agent said something it must not |
+| `max-command-output` | transcript | a shell command printed more than a limit |
 | `claims` | transcript | the agent claimed tests, lint, types, build, commit or push with no backing command |
 
 Results are `pass`, `fail`, `unverified` (the evidence exists but cannot be confirmed, e.g. no

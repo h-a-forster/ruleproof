@@ -3,6 +3,11 @@
 Also reads headless ``claude -p --output-format stream-json --verbose`` output (JSONL or a JSON
 array of the same records). Subagent transcripts in ``<id>/subagents/**/agent-*.jsonl`` are
 merged by timestamp with ``actor`` set to the subagent id.
+
+User events are what a person typed: prompts, messages queued while the agent worked
+(``queued_command`` attachments) and slash commands (as ``/name args``). Text the harness
+injects as a user turn (background-task notifications, messages from other sessions, local
+command output, system reminders) is not a user event.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from ruleproof.transcripts._util import (
     merge_streams,
     str_or_none,
     summarize,
+    tool_input,
     warn,
 )
 
@@ -32,6 +38,17 @@ EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 _EXIT_RE = re.compile(r"^(?:Error: )?Exit code (-?\d+)")
 _WRITE_ACTIONS: dict[str, EditAction] = {"create": "add", "update": "modify"}
 _CLAUDE_TYPES = {"user", "assistant", "system", "result"}
+# User-turn text the harness writes, not the person (older transcripts have no `origin`).
+_INJECTED_PREFIXES = (
+    "<task-notification>",
+    "<local-command-caveat>",
+    "<local-command-stdout>",
+    "<local-command-stderr>",
+    "<system-reminder>",
+    "Another Claude session sent",
+)
+_SLASH_RE = re.compile(r"<command-name>\s*(/?[^<]*?)\s*</command-name>")
+_SLASH_ARGS_RE = re.compile(r"<command-args>([\s\S]*?)</command-args>")
 
 
 @dataclass(slots=True)
@@ -83,6 +100,8 @@ def _parse_stream(path: Path, session: Session, actor: str, primary: bool = True
                 _assistant(st, rec)
             elif rec["type"] == "user":
                 _user(st, rec)
+            elif rec["type"] == "attachment":
+                _attachment(st, rec)
         except RECORD_ERRORS as exc:
             warn(warnings, f"skipped a malformed {rec['type']} record ({type(exc).__name__})")
     prefix = "" if primary else f"{path.name}: "
@@ -166,7 +185,36 @@ def _tool_event(block: dict[str, Any], ts: str | None, actor: str) -> tuple[Even
         ev = Event(0, EventKind.EDIT, path or "", ts, tool=name, path=path, action=action)
         ev.actor = actor
         return ev, False
-    return Event(0, EventKind.TOOL, summarize(inp), ts, tool=name, actor=actor), False
+    ev = Event(0, EventKind.TOOL, summarize(inp), ts, tool=name, actor=actor)
+    ev.input = tool_input(inp)
+    return ev, False
+
+
+def _human_text(text: str) -> str | None:
+    """What the person typed, or None for text the harness injected as a user turn."""
+    text = text.strip()
+    if not text or text.startswith(_INJECTED_PREFIXES):
+        return None
+    slash = _SLASH_RE.search(text)
+    if slash and text.startswith(("<command-name>", "<command-message>")):
+        args = _SLASH_ARGS_RE.search(text)
+        name = slash.group(1)
+        name = name if name.startswith("/") else "/" + name
+        return f"{name} {args.group(1).strip()}".strip() if args else name
+    return text
+
+
+def _from_person(rec: dict[str, Any]) -> bool:
+    """False for a user turn the harness or another session produced (``origin.kind``)."""
+    origin = rec.get("origin")
+    kind = origin.get("kind") if isinstance(origin, dict) else None
+    return kind == "human" if isinstance(kind, str) else True
+
+
+def _add_user(st: _State, rec: dict[str, Any], text: str, ts: str | None) -> None:
+    human = _human_text(text)
+    if human:
+        st.events.append(Event(0, EventKind.USER, human, ts, actor=_actor(st, rec)))
 
 
 def _user(st: _State, rec: dict[str, Any]) -> None:
@@ -175,9 +223,10 @@ def _user(st: _State, rec: dict[str, Any]) -> None:
     msg = rec.get("message") or {}
     content = msg.get("content")
     ts = str_or_none(rec.get("timestamp"))
+    person = _from_person(rec)
     if isinstance(content, str):
-        if content.strip():
-            st.events.append(Event(0, EventKind.USER, content.strip(), ts, actor=_actor(st, rec)))
+        if person:
+            _add_user(st, rec, content, ts)
         return
     if not isinstance(content, list):
         return
@@ -187,15 +236,24 @@ def _user(st: _State, rec: dict[str, Any]) -> None:
         for b in content
         if isinstance(b, dict) and b.get("type") == "text" and str(b.get("text") or "").strip()
     ]
-    if texts and not results:
-        st.events.append(
-            Event(0, EventKind.USER, "\n".join(texts).strip(), ts, actor=_actor(st, rec))
-        )
+    if texts and not results and person:
+        _add_user(st, rec, "\n".join(texts), ts)
     extra = rec.get("toolUseResult", rec.get("tool_use_result")) if len(results) == 1 else None
     for block in results:
         pending = st.pending.get(str(block.get("tool_use_id") or ""))
         if pending is not None:
             _apply_result(pending, block, extra)
+
+
+def _attachment(st: _State, rec: dict[str, Any]) -> None:
+    """A message the person typed while the agent worked (delivered as an attachment)."""
+    att = rec.get("attachment")
+    if not isinstance(att, dict) or att.get("type") != "queued_command":
+        return
+    if not _from_person(att) or att.get("commandMode") not in (None, "prompt"):
+        return
+    ts = str_or_none(rec.get("timestamp")) or str_or_none(att.get("timestamp"))
+    _add_user(st, rec, content_text(att.get("prompt")), ts)
 
 
 def _apply_result(pending: _Pending, block: dict[str, Any], extra: object) -> None:
