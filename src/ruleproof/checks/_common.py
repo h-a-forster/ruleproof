@@ -842,9 +842,11 @@ _FORMAT_WRITES = re.compile(
 # `cd dir && cat > file`: the directory a later relative redirect target is in. A quoted
 # directory with spaces is masked, and leaves the group empty.
 _CD = re.compile(
-    r"(?:^|[;&|\n{]\s*)(?:(cd|set-location|sl)|pushd|push-location)"
+    # `[ \t]*`, not `\s*`: masked heredocs are long runs of blanks and newlines, and `\s*`
+    # after each newline in them made this quadratic (1 s on a 33 kB command line).
+    r"(?:^|[;&|\n{][ \t]*)(?:(cd|set-location|sl)|pushd|push-location)"
     r"(?:[ \t]+(?:-\w+[ \t]+)?([^\s;&|<>(){}]*))?(?=\s*(?:$|[;&|\n)}]))"
-    r"|(?:^|[;&|\n{]\s*)(?:popd|pop-location)(?=\s*(?:$|[;&|\n)}]))",
+    r"|(?:^|[;&|\n{][ \t]*)(?:popd|pop-location)(?=\s*(?:$|[;&|\n)}]))",
     re.IGNORECASE,
 )
 

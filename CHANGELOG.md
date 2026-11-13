@@ -31,6 +31,8 @@ All notable changes to this project are documented here. The format follows
   build claim.
 - Checks read each command line once per run instead of once per rule: 33 rules on a 25 MB
   Claude Code session took 37 s instead of 194 s.
+- Finding `cd` in a command with a long heredoc was quadratic in its length (1 s for a 33 kB
+  command, 168 s for a 20,000-line heredoc); it is now linear.
 
 ## [0.1.1] - 2026-10-30
 

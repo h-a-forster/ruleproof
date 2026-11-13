@@ -704,6 +704,17 @@ def test_shell_writes(command: str, writes: list[str | None]) -> None:
     assert shell_writes(command) == writes
 
 
+def test_shell_writes_is_linear_in_heredoc_length() -> None:
+    # A masked heredoc is a long run of blank lines; the cd pattern once rescanned the rest of
+    # it from every newline (10 s for 5000 lines, minutes for agents' larger scripts).
+    import time
+
+    cmd = "cd repo && python - <<'EOF'\n" + "x = 1\n" * 5000 + "EOF\necho done > out.txt"
+    start = time.perf_counter()
+    assert shell_writes(cmd) == ["repo/out.txt"]
+    assert time.perf_counter() - start < 3
+
+
 def test_shell_writes_count_as_edits() -> None:
     s = session(edit(E), cmd("pytest"), cmd("sed -i s/a/b/ src/app.py"))
     assert run(make_rule("require-command", command="pytest"), s).status == "fail"
