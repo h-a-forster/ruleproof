@@ -563,8 +563,17 @@ def command_texts(command: str, match_quoted: bool = False, powershell: bool = F
     """
     if match_quoted:
         return [command]
+    return list(_masked_texts(command, powershell))
+
+
+@functools.lru_cache(maxsize=1 << 16)
+def _masked_texts(command: str, powershell: bool) -> tuple[str, ...]:
+    """``command_texts`` without ``match_quoted``, cached: every rule re-reads each command.
+
+    Rules scan a session's commands in order, so the cache must hold all of them to help.
+    """
     views = _views(command, powershell, keep_operators=True)
-    return [v.masked if v.raw else _QUOTE_CHARS.sub("", v.masked) for v in views]
+    return tuple(v.masked if v.raw else _QUOTE_CHARS.sub("", v.masked) for v in views)
 
 
 def command_matches(
@@ -912,6 +921,15 @@ _NO_WRITE_FLAGS = frozenset(
 def shell_writes(command: str, powershell: bool = False) -> list[str | None]:
     """Files a shell command obviously writes; None for a write whose target is unknown.
 
+    See ``_shell_writes``; cached because every check that counts edits re-reads each command.
+    """
+    return list(_shell_writes(command, powershell))
+
+
+@functools.lru_cache(maxsize=1 << 16)
+def _shell_writes(command: str, powershell: bool) -> tuple[str | None, ...]:
+    """Files a shell command obviously writes; None for a write whose target is unknown.
+
     Conservative: output redirects (``>``, ``>>``) and ``tee`` to files, ``sed -i`` /
     ``perl -i``, ``git apply`` / ``git am`` / ``patch``, ``git checkout -- ...`` /
     ``git restore``, ``--fix`` / ``--write`` flags and formatters that rewrite files by
@@ -959,7 +977,7 @@ def shell_writes(command: str, powershell: bool = False) -> list[str | None]:
             else:
                 continue
             break
-    return out
+    return tuple(out)
 
 
 # --- outcomes ---------------------------------------------------------------------------
