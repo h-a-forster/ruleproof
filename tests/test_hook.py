@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib
 import io
+import itertools
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -714,6 +716,128 @@ def test_hook_reads_payload_as_utf8_in_any_locale(tmp_path: Path) -> None:
     )
     assert proc.stdout, proc.stderr.decode("utf-8", "replace")
     assert json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# --------------------------------------------------------------------------- incremental reads
+
+HISTORY_RULES = """version = 1
+[[rule]]
+id = "push-when-asked"
+check = "forbid-command"
+command = 'git push'
+unless_user = 'push it'
+[[rule]]
+id = "clean-after-tests"
+check = "forbid-command"
+command = 'rm -rf'
+unless_after = 'pytest'
+[[rule]]
+id = "fetch-when-asked"
+check = "forbid-tool"
+tool = '^WebFetch$'
+unless_user = 'fetch'
+"""
+
+PROPOSED: list[tuple[str, dict[str, Any]]] = [
+    ("Bash", {"command": "git push origin main"}),
+    ("Bash", {"command": "rm -rf build"}),
+    ("WebFetch", {"url": "https://example.com", "prompt": "x"}),
+    ("Bash", {"command": "ls"}),
+]
+
+
+def _random_history(rng: random.Random, n: int) -> bytes:
+    """A synthetic transcript whose records can allow or not allow the ``PROPOSED`` calls:
+    user messages (some asking to push or fetch), commands that ran, failed or were denied,
+    non-ASCII text throughout, CRLF line ends and the odd broken line."""
+    asks = ["fix the bug ✓", "now push it, s'il vous plaît", "please fetch the docs 日本", "go on"]
+    commands = ["uv run pytest -q", "git push", "rm -rf build", "ls ☃", "git status"]
+    results = [
+        ("ok é", False),
+        ("Exit code 1\nFAILED ✗", True),
+        ("Permission to use Bash has been denied. ☂", True),
+    ]
+    lines: list[str] = []
+    for i in range(n):
+        roll = rng.random()
+        if roll < 0.3:
+            rec: dict[str, Any] = {"type": "user", "message": {"content": rng.choice(asks)}}
+            lines.append(json.dumps({"sessionId": "s1", **rec}, ensure_ascii=False))
+        elif roll < 0.9:
+            name, inp = (
+                ("WebFetch", {"url": "https://example.com/ü"})
+                if rng.random() < 0.2
+                else ("Bash", {"command": rng.choice(commands)})
+            )
+            use = {"type": "tool_use", "id": f"t{i}", "name": name, "input": inp}
+            text, is_error = rng.choice(results)
+            res = {"type": "tool_result", "tool_use_id": f"t{i}", "content": text}
+            res["is_error"] = is_error
+            for rec in (
+                {"type": "assistant", "message": {"id": f"m{i}", "content": [use]}},
+                {"type": "user", "message": {"content": [res]}},
+            ):
+                lines.append(json.dumps({"sessionId": "s1", **rec}, ensure_ascii=False))
+        else:
+            lines.append('{"type": "user", "message": {"content": "torn ✂')  # malformed
+    newline = "\r\n" if rng.random() < 0.3 else "\n"
+    return "".join(line + newline for line in lines).encode("utf-8")
+
+
+def _cuts(rng: random.Random, data: bytes) -> list[int]:
+    """Random append boundaries, always including one inside a JSON line, one inside a
+    multi-byte UTF-8 character and one between a whole record and its line end."""
+    mid_line = [i for i in range(1, len(data)) if data[i - 1] not in b"\r\n"]
+    mid_char = [i for i in range(1, len(data)) if 0x80 <= data[i] < 0xC0]  # continuation byte
+    before_end = [i for i in range(1, len(data)) if data[i - 1 : i + 1] in (b"}\n", b"}\r")]
+    cuts = {rng.choice(mid_line), rng.choice(mid_char), rng.choice(before_end)}
+    cuts.update(rng.sample(range(1, len(data)), rng.randint(0, 6)))
+    return sorted(cuts)
+
+
+def test_incremental_reads_decide_like_full_reads(
+    pre_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Property-style: a transcript appended in random pieces, cut anywhere, gets the same
+    PreToolUse decision through the cache as through a full read of the file as it is."""
+    from ruleproof.transcripts import cache, claude
+
+    (pre_repo / "ruleproof.toml").write_text(HISTORY_RULES, encoding="utf-8")
+    path = pre_repo / "t.jsonl"
+    rng = random.Random(20261121)
+    real_load = cache.load
+    rules = hook._load_rules(pre_repo, str(pre_repo), None)
+    monkeypatch.setattr(hook, "_load_rules", lambda *_: rules)  # once: discovery runs git
+
+    def full_read(p: Path, _cache_dir: Path | None, **_kw: Any) -> Session:
+        return claude.parse(p)
+
+    def decide(tool: str, tool_input: dict[str, Any], reading: hook.Reading) -> str | None:
+        data = {
+            "transcript_path": str(path),
+            "cwd": str(pre_repo),
+            "hook_event_name": "PreToolUse",
+            "tool_name": tool,
+            "tool_input": tool_input,
+        }
+        return hook.evaluate_pretool(data, io.StringIO(), reading=reading)
+
+    decisions: set[str | None] = set()
+    for trial in range(15):
+        data = _random_history(rng, rng.randint(3, 25))
+        reading = hook.Reading(tmp_path / f"cache-{trial}")
+        path.write_bytes(b"")
+        for a, b in itertools.pairwise([0, *_cuts(rng, data), len(data)]):
+            with open(path, "ab") as fh:
+                fh.write(data[a:b])
+            for tool, tool_input in PROPOSED:
+                monkeypatch.setattr(cache, "load", full_read)
+                want = decide(tool, tool_input, hook.Reading())
+                monkeypatch.setattr(cache, "load", real_load)
+                assert decide(tool, tool_input, reading) == want, (trial, a, b, tool, tool_input)
+                decisions.add(want)
+        assert cache.cache_file(path, tmp_path / f"cache-{trial}", slim=True).is_file()
+    assert None in decisions and len(decisions) > 3  # both outcomes, for several rules
 
 
 # --------------------------------------------------------------------------- time budget

@@ -5,10 +5,12 @@
 For each size it writes a synthetic Claude Code transcript under ``tmp/hookbench/`` (a seeded,
 append-only mix of prompts, assistant text, thinking blocks, shell commands, edits, file reads
 and tool results from a few hundred bytes to a few hundred kB), then starts ``ruleproof hook
-claude-pretool`` and ``ruleproof hook claude-stop`` as subprocesses and reports wall time:
-cold (no cache: the whole file is read), warm (nothing appended) and after appending a few
-records, which is what a hook call in a live session sees. The numbers in
-``docs/claude-code-hook.md`` come from this script.
+claude-pretool`` and ``ruleproof hook claude-stop`` as subprocesses and reports the wall
+time of each call in a series (``--calls``, default 10): the first starts with no cache, so
+the whole file is read, and every later one follows an append of a few records, which is what
+a hook call in a live session sees. The numbers in ``docs/claude-code-hook.md`` come from this
+script; for the numbers before incremental reads, run it with ``PYTHONPATH`` set to the
+``src`` folder of an older checkout.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import json
 import os
 import random
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -210,6 +213,7 @@ HOOK_ARGS: list[str] = []
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mb", type=int, nargs="+", default=[200, 1000])
+    ap.add_argument("--calls", type=int, default=10, help="hook calls per series (10)")
     ap.add_argument("--keep", action="store_true", help="keep the generated transcripts")
     ap.add_argument("hook_args", nargs="*", help="extra arguments for both hooks, after --")
     args = ap.parse_args()
@@ -237,21 +241,31 @@ def main() -> int:
         stop = {**base, "hook_event_name": "Stop", "stop_hook_active": False}
         size = path.stat().st_size / 1e6
         sys.stdout.write(f"\n{mb} MB transcript ({size:.0f} MB on disk before appends)\n")
-        steps = [("cold", False), ("warm", False), ("after append", True)]
         for hook, payload in (("claude-pretool", pre), ("claude-stop", stop)):
             shutil.rmtree(WORK / "cache", ignore_errors=True)
-            for i, (label, grow) in enumerate(steps):
-                if grow:
-                    append_turns(path, repo.as_posix(), seed=mb + i + len(hook))
+            times: list[float] = []
+            for call in range(1, args.calls + 1):
+                if call > 1:
+                    append_turns(path, repo.as_posix(), seed=mb + call + len(hook))
                 secs, out, err = run_hook(hook, payload, env)
+                times.append(secs)
                 decided = "decision" if out else "no decision"
                 note = f"  [{err.splitlines()[-1][:150]}]" if err else ""
-                sys.stdout.write(f"  {hook:15} {label:13} {secs:7.2f} s  {decided}{note}\n")
+                label = "no cache" if call == 1 else "after append"
+                sys.stdout.write(
+                    f"  {hook:15} call {call:2} {label:13} {secs:7.2f} s  {decided}{note}\n"
+                )
                 sys.stdout.flush()
-        cache = WORK / "cache"
-        if cache.exists():
-            used = sum(f.stat().st_size for f in cache.rglob("*") if f.is_file()) / 1e6
-            sys.stdout.write(f"  cache on disk: {used:.1f} MB\n")
+            if len(times) > 1:
+                later = sorted(times[1:])
+                sys.stdout.write(
+                    f"  {hook:15} calls 2-{len(times)}: median {statistics.median(later):.2f} s, "
+                    f"min {later[0]:.2f} s, max {later[-1]:.2f} s\n"
+                )
+            cache = WORK / "cache"
+            if cache.exists():
+                used = sum(f.stat().st_size for f in cache.rglob("*") if f.is_file()) / 1e6
+                sys.stdout.write(f"  {hook:15} cache on disk: {used:.1f} MB\n")
         if not args.keep:
             path.unlink()
     return 0

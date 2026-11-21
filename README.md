@@ -188,10 +188,12 @@ Two Claude Code hooks:
 ```
 
 Details: [docs/claude-code-hook.md](docs/claude-code-hook.md). On long sessions the hooks read
-the transcript incrementally and within a time budget, and refuse what they could not check in
-time rather than let it through. One known gap: the first PreToolUse call on a 1 GB session with
-no cache took 10.7 s, over the 10 s timeout the docs suggest, so Claude Code would let
-that call through ([Long sessions](docs/claude-code-hook.md#long-sessions)).
+only the transcript lines appended since their last call, within a time budget, and refuse what
+they could not check in time rather than let it through. On a 1 GB transcript, PreToolUse calls
+after the first took 0.38 to 0.49 s, against 2.2 to 2.4 s for a full read; the first call, with
+no cache, took 2.5 s. One known gap: under heavy disk load a first call once took 10.7 s, over
+the 10 s timeout the docs suggest, so Claude Code would let that call through
+([Long sessions](docs/claude-code-hook.md#long-sessions)).
 
 ## CI
 

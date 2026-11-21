@@ -174,12 +174,15 @@ line in the user cache directory (`%LOCALAPPDATA%\ruleproof\transcripts` on Wind
 `~/Library/Caches/ruleproof/transcripts` on macOS, `$XDG_CACHE_HOME/ruleproof/transcripts` or
 `~/.cache/ruleproof/transcripts` elsewhere; with `RULEPROOF_CACHE_DIR` set, its `transcripts`
 subfolder). A call parses only what was appended since the last one. The result is the same as
-a full read: a half-written last line is read again next time, and a transcript that shrank or
-whose bytes changed (a rewrite) is read again from the start, as is one whose cache is missing,
-corrupt, from another ruleproof version or cannot be written. The cache holds what the
-transcript holds (messages, commands, truncated output), never goes into the repo, and entries
-untouched for 30 days are removed (only files ruleproof wrote are ever deleted).
-`RULEPROOF_HOOK_CACHE=0` turns it off: every call reads the whole transcript.
+a full read: a half-written last line is read again next time, and a transcript that shrank, or
+whose first 4 kB or 4 kB before the cached offset changed (a rewrite), is read again from the
+start, as is one whose cache is missing, corrupt, from another ruleproof version or cannot be
+written. Concurrent calls each replace the cache in one step, so none sees a partial file. The
+PreToolUse hook keeps a cache of its own without tool output, which its rules do not read (except
+for a call that failed without an exit code: it may have been denied, and then does not count).
+The caches hold what the transcript holds (messages, commands, truncated output), never go into
+the repo, and entries untouched for 30 days are removed (only files ruleproof wrote are ever
+deleted). `RULEPROOF_HOOK_CACHE=0` turns them off: every call reads the whole transcript.
 
 **A time budget that fails closed.** If the transcript still cannot be read in time (the first
 call in a session that is already long, or after a ruleproof upgrade), the read stops at the
@@ -199,31 +202,33 @@ restores the old behaviour of reading to the end however long it takes. Failing 
 default because the alternative is the silent failure this section is about; a denied call or an
 extra Stop turn is visible and recovers on the next call.
 
-**Measured** with `scripts/bench_hook_transcript.py` (synthetic transcripts with large tool
-results; one `ruleproof hook` process per call, rules `forbid-command` with `unless_user`,
-`require-command` and `claims`) on a Windows desktop shared with other jobs, so single numbers
-vary by 2x or more. "Before" is 201f26b, which read the whole transcript on every call; "after"
-uses the default budgets, starting with no cache:
+**Measured** with `scripts/bench_hook_transcript.py --mb 1000` on a synthetic 1 GB transcript
+with large tool results: one `ruleproof hook` process per call, rules `forbid-command` with
+`unless_user`, `require-command` and `claims`, default budgets. Call 1 starts with no cache;
+calls 2 to 10 each follow an append of a few records, as in a live session. "Before" is
+201f26b, which read the whole transcript on every call; "after" is the current code. Two runs
+of each, back to back; wall time per call on a Windows desktop:
 
-| Transcript | Hook | Before: every call | After: first call | After: next call | After: call after an append |
-| --- | --- | --- | --- | --- | --- |
-| 200 MB | PreToolUse | 0.9 to 2.4 s | 0.8 s | 0.3 s | 0.3 s |
-| 200 MB | Stop | 1.6 s (one 15 s outlier) | 1.0 s | 0.9 s | 1.2 s |
-| 1 GB | PreToolUse | 16 s | 10.7 s | 0.7 s | 1.0 s |
-| 1 GB | Stop | not timed; a full parse alone took 16 to 70 s | 28 s | 1.2 s | 1.3 s |
+| Hook | Before: calls 1 to 10 | After: call 1 (no cache) | After: calls 2 to 10 |
+| --- | --- | --- | --- |
+| PreToolUse | 2.2 to 2.4 s, median 2.3 s (one call 10.0 s) | 2.5 and 2.6 s | 0.38 to 0.49 s, median 0.42 s |
+| Stop | 2.5 to 3.0 s, median 2.6 to 2.8 s (one call 5.6 s) | 3.2 and 3.6 s | 1.0 to 1.3 s, median 1.1 s |
 
-The cache is about 50 MB per GB of transcript (9.6 MB for 200 MB, 51 MB for 1 GB).
+The caches for the 1 GB transcript were 6.9 MB (PreToolUse) and 51 MB (Stop); writing them is
+most of what a first call costs beyond a full read. Times rise several-fold when the disk is
+busy: an earlier run on the same machine under heavy load measured 16 s per PreToolUse call
+before, and a first call of 10.7 s with an earlier version of the incremental reader.
 
 Limits:
 
 - The budget bounds loading the cache and reading the transcript, not starting Python, saving
-  the cache or running the rules. The first call on a 1 GB session with no cache took 10.7 s,
-  just over PreToolUse's 10 s timeout, so that one call would have been let through. In an
-  earlier run on the same machine under heavier load, first calls took 9 to 59 s. From the
-  second call on, calls stayed near 1 s. On sessions of a GB or more, set the PreToolUse
-  `timeout` to 30 and keep the budget at 5.
-- Each call still loads the whole cache and, when lines were appended, rewrites it, so the
-  per-call cost grows with the session, at about a twentieth of a full read's rate.
+  the cache or running the rules. Under heavy load a first call can still run past
+  PreToolUse's 10 s timeout (10.7 s in the loaded run above), and Claude Code then lets that
+  call through. On sessions of a GB or more, set the PreToolUse `timeout` to 30 and keep the
+  budget at 5.
+- Each call still loads its whole cache and, when lines were appended, rewrites it, so the
+  per-call cost grows with the session: about 7 MB of cache per GB of transcript for
+  PreToolUse, 50 MB for Stop.
 - The first calls in a session that is already long (or after a ruleproof upgrade, which
   starts a new cache) refuse history-dependent calls until the read catches up, about one
   budget's worth of transcript per call.

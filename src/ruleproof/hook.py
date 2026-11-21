@@ -267,9 +267,13 @@ def _unread_notice(unread: BudgetExceeded, unchecked: list[str]) -> str:
 
 
 def _load_transcript(
-    payload: Mapping[str, Any], stderr: TextIO, reading: Reading | None = None
+    payload: Mapping[str, Any],
+    stderr: TextIO,
+    reading: Reading | None = None,
+    slim: bool = False,
 ) -> Session | None:
-    """The session so far, or None when there is no readable transcript.
+    """The session so far, or None when there is no readable transcript. ``slim``: without
+    the tool output the PreToolUse rules never read (``cache.slim_view``).
 
     Raises ``BudgetExceeded`` when the read ran past ``reading.deadline``: the caller decides
     what that means for its rules.
@@ -291,6 +295,7 @@ def _load_transcript(
             reading.cache_dir,
             deadline=reading.deadline,
             clock=reading.clock,
+            slim=slim,
         )
     except BudgetExceeded:
         raise
@@ -452,7 +457,7 @@ def _judge_with_history(
 
     unread: BudgetExceeded | None = None
     try:
-        history = _load_transcript(payload, stderr, reading)
+        history = _load_transcript(payload, stderr, reading, slim=True)
     except BudgetExceeded as exc:
         history, unread = None, exc
     session = history if history is not None else proposed

@@ -15,6 +15,8 @@ code as the full read (``claude.feed``), so the session it returns equals ``clau
   so concurrent hook processes see a whole file or none.
 - With a ``deadline``, a read that runs out of time saves what it parsed and raises
   ``BudgetExceeded``; the next call continues from there.
+- ``slim`` keeps a separate, smaller cache for the PreToolUse hook: tool output, most of a
+  transcript's bytes, is kept only where ``did_not_run`` reads it.
 
 The cache holds what the transcript holds (messages, commands, truncated output), so it lives
 beside other per-user caches, never in the repo being checked.
@@ -47,11 +49,12 @@ from ruleproof.transcripts._util import (
     parse_line,
 )
 
-FORMAT = 1
+FORMAT = 2
 """Bump when the cached state or the parser's reading of a record changes."""
 
 CACHE_DIR_ENV = "RULEPROOF_CACHE_DIR"
 _CHUNK = 1 << 20
+"""Bytes read between checks of the clock."""
 _FINGERPRINT_BYTES = 4096
 _NEWLINE_RE = re.compile(rb"\r\n|\r|\n")  # the line ends text mode splits on
 _STALE_DAYS = 30
@@ -118,8 +121,9 @@ def default_cache_dir(env: Mapping[str, str] | None = None) -> Path:
     return base / "ruleproof" / "transcripts"
 
 
-def cache_file(path: Path, cache_dir: Path) -> Path:
-    key = hashlib.sha256(str(_absolute(path)).encode("utf-8", "surrogatepass")).hexdigest()
+def cache_file(path: Path, cache_dir: Path, slim: bool = False) -> Path:
+    name = str(_absolute(path)) + ("\0slim" if slim else "")
+    key = hashlib.sha256(name.encode("utf-8", "surrogatepass")).hexdigest()
     return cache_dir / f"{key[:32]}.json"
 
 
@@ -130,16 +134,45 @@ def load(
     include_subagents: bool = True,
     deadline: float | None = None,
     clock: Clock = time.monotonic,
+    slim: bool = False,
 ) -> Session:
     """The session ``claude.parse(path)`` returns, reading only what the cache lacks.
 
     ``cache_dir=None`` reads everything and stores nothing. ``deadline`` is a ``clock()``
-    value; past it the read stops with ``BudgetExceeded``.
+    value; past it the read stops with ``BudgetExceeded``. ``slim`` drops the output of
+    every call except one that failed without an exit code (``slim_view``), in the result
+    and in its own cache file.
     """
+    session = _load(path, cache_dir, include_subagents, deadline, clock, slim)
+    return slim_view(session) if slim else session
+
+
+def slim_view(session: Session) -> Session:
+    """``session`` without the output of calls that ran or succeeded. ``did_not_run`` reads
+    output only when a call failed without an exit code (a denied or blocked call); the
+    PreToolUse rules read nothing else of it. Changes ``session`` in place."""
+    for ev in session.events:
+        if not _keeps_output(ev):
+            ev.output = ""
+    return session
+
+
+def _keeps_output(ev: Event) -> bool:
+    return ev.is_error is True and ev.exit_code is None
+
+
+def _load(
+    path: Path,
+    cache_dir: Path | None,
+    include_subagents: bool,
+    deadline: float | None,
+    clock: Clock,
+    slim: bool,
+) -> Session:
     if not path.is_file():
         raise TranscriptError(f"transcript not found: {path}")
-    store = cache_file(path, cache_dir) if cache_dir is not None else None
-    cached = _read_cache(store, path) if store is not None else {}
+    store = cache_file(path, cache_dir, slim) if cache_dir is not None else None
+    cached = _read_cache(store, path, slim) if store is not None else {}
     session = Session(agent=claude.AGENT, id=path.stem, path=str(path))
     files = [path]
     if include_subagents:
@@ -157,13 +190,13 @@ def load(
     try:
         tails = [_advance(stream, deadline, clock) for stream in streams]
         if store is not None and (any(s.dirty for s in streams) or len(cached) != len(streams)):
-            _write_cache(store, path, streams, fresh)
+            _write_cache(store, path, streams, fresh, slim)
         for stream, tail in zip(streams, tails, strict=True):
             _feed_lines(stream, tail)  # not cached: the line may still be growing
     except _NotJsonl:
         return claude.parse(path, include_subagents)
     except _OutOfTime:
-        saved = store is not None and _write_cache(store, path, streams, fresh)
+        saved = store is not None and _write_cache(store, path, streams, fresh, slim)
         done = sum(s.offset for s in streams)
         total = sum(_size(f) for f in files)
         raise BudgetExceeded(path, done, total, saved) from None
@@ -202,23 +235,25 @@ def _advance(stream: _Stream, deadline: float | None, clock: Clock) -> bytes:
             _reset(stream)
         end = os.fstat(fh.fileno()).st_size
         fh.seek(stream.offset)
-        parts: list[bytes] = []
-        while chunk := fh.read(_CHUNK):
-            parts.append(chunk)
-            if b"\n" not in chunk:
-                continue  # a line longer than the chunk
-            block = b"".join(parts)
-            cut = block.rindex(b"\n") + 1
-            parts = [block[cut:]] if cut < len(block) else []
-            _feed_lines(stream, block[:cut])
-            stream.offset += cut
+        rest = b""
+        checked = stream.offset
+        # Line by line: cutting blocks into lines copied every byte three more times.
+        for raw in fh:
+            if not raw.endswith(b"\n"):
+                rest = raw  # unterminated: it may still be growing
+                break
+            _feed_lines(stream, raw)
+            stream.offset += len(raw)
             stream.dirty = True
-            if deadline is not None and fh.tell() < end and clock() > deadline:
+            if deadline is None or stream.offset - checked < _CHUNK:
+                continue
+            checked = stream.offset
+            if stream.offset < end and clock() > deadline:
                 _fingerprint(stream, fh)
                 raise _OutOfTime
         if stream.dirty:
             _fingerprint(stream, fh)
-    return b"".join(parts)
+    return rest
 
 
 def _open_binary(path: Path) -> BinaryIO:
@@ -287,7 +322,7 @@ def _reset(stream: _Stream) -> None:
 # --------------------------------------------------------------------------- cache file
 
 
-def _read_cache(store: Path, path: Path) -> dict[str, Any]:
+def _read_cache(store: Path, path: Path, slim: bool) -> dict[str, Any]:
     """The cached streams by file path; empty when there is no usable cache."""
     try:
         data = json.loads(store.read_bytes())
@@ -298,6 +333,7 @@ def _read_cache(store: Path, path: Path) -> dict[str, Any]:
         or data.get("format") != FORMAT
         or data.get("ruleproof") != __version__
         or data.get("path") != str(_absolute(path))
+        or data.get("slim") is not slim
         or not isinstance(data.get("streams"), dict)
     ):
         return {}
@@ -361,7 +397,7 @@ def _opt(value: object) -> str | None:
     return None if value is None else _str(value)
 
 
-def _encode(stream: _Stream) -> dict[str, Any]:
+def _encode(stream: _Stream, slim: bool) -> dict[str, Any]:
     st = stream.state
     index = {id(ev): i for i, ev in enumerate(st.events)}
     raw: dict[str, Any] = {
@@ -383,7 +419,7 @@ def _encode(stream: _Stream) -> dict[str, Any]:
                 e.path,
                 e.action,
                 e.exit_code,
-                e.output,
+                e.output if not slim or _keeps_output(e) else "",
                 e.is_error,
                 e.actor,
                 e.input,
@@ -398,14 +434,15 @@ def _encode(stream: _Stream) -> dict[str, Any]:
     return raw
 
 
-def _write_cache(store: Path, path: Path, streams: list[_Stream], prune: bool) -> bool:
+def _write_cache(store: Path, path: Path, streams: list[_Stream], prune: bool, slim: bool) -> bool:
     """Replace the cache in one step. False when it cannot be written; the caller's result
     does not depend on it."""
     data = {
         "format": FORMAT,
         "ruleproof": __version__,
         "path": str(_absolute(path)),
-        "streams": {str(s.file): _encode(s) for s in streams},
+        "slim": slim,
+        "streams": {str(s.file): _encode(s, slim) for s in streams},
     }
     tmp: str | None = None
     try:

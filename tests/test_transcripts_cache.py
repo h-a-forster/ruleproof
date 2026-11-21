@@ -150,13 +150,19 @@ def test_a_torn_last_line_is_read_again_once_complete(
 
 def test_random_append_splits_match_a_full_read(tmp_path: Path, cache_dir: Path) -> None:
     # Property-style: any sequence of appends, cut at any byte, reads like the whole file.
+    # Every run cuts inside a line, inside a multi-byte character and between a record and
+    # its line end (a complete record the next call must not read twice).
     data = MAIN.read_bytes() + jsonl(records(12, start=200), "\r\n") + b"not json\n\n"
     data += '{"type": "user", "message": {"content": "tail ☃"}}\n'.encode()
+    mid_line = [i for i in range(1, len(data)) if data[i - 1] not in b"\r\n"]
+    mid_char = [i for i in range(1, len(data)) if 0x80 <= data[i] < 0xC0]
+    before_end = [i for i in range(1, len(data)) if data[i - 1 : i + 1] in (b"}\n", b"}\r")]
     rng = random.Random(20261121)
     path = tmp_path / "s.jsonl"
     for _ in range(25):
         shutil.rmtree(cache_dir, ignore_errors=True)
-        cuts = sorted(rng.sample(range(1, len(data)), rng.randint(1, 8)))
+        must = {rng.choice(mid_line), rng.choice(mid_char), rng.choice(before_end)}
+        cuts = sorted(must | set(rng.sample(range(1, len(data)), rng.randint(0, 6))))
         path.write_bytes(b"")
         for a, b in itertools.pairwise([0, *cuts, len(data)]):
             with open(path, "ab") as fh:
@@ -168,6 +174,8 @@ def test_random_append_splits_match_a_full_read(tmp_path: Path, cache_dir: Path)
                     cache.load(path, cache_dir)
                 continue
             assert cache.load(path, cache_dir) == full
+            # The PreToolUse hook's slim cache sits beside the full one and reads the same.
+            assert cache.load(path, cache_dir, slim=True) == cache.slim_view(full)
 
 
 def test_a_bad_cache_falls_back_to_a_full_read(tmp_path: Path, cache_dir: Path) -> None:
@@ -182,6 +190,7 @@ def test_a_bad_cache_falls_back_to_a_full_read(tmp_path: Path, cache_dir: Path) 
         {**good, "format": cache.FORMAT + 1},
         {**good, "ruleproof": "0.0.0"},
         {**good, "path": str(tmp_path / "other.jsonl")},
+        {**good, "slim": True},
         {**good, "streams": {str(path): {**stream, "events": [["no-such-kind"]]}}},
         {**good, "streams": {str(path): {**stream, "offset": -5}}},
         {**good, "streams": {str(path): {**stream, "pending": {"t": [10**6, False]}}}},
@@ -190,6 +199,30 @@ def test_a_bad_cache_falls_back_to_a_full_read(tmp_path: Path, cache_dir: Path) 
     for bad in broken:
         store.write_bytes(bad if isinstance(bad, bytes) else json.dumps(bad).encode())
         assert_same(path, cache_dir)
+        assert json.loads(store.read_bytes()) == good  # rebuilt, not left broken
+
+
+def test_a_slim_cache_keeps_only_the_output_did_not_run_reads(
+    tmp_path: Path, cache_dir: Path
+) -> None:
+    from ruleproof.checks._common import did_not_run
+
+    path = tmp_path / "s.jsonl"
+    recs = records(6)
+    denied = "Permission to use Bash has been denied."
+    results = [("big output " * 2000, False), (denied, True), ("Exit code 2\nboom", True)]
+    for rec, (out, is_error) in zip(recs[4::5], results * 2, strict=True):  # tool results
+        block: dict[str, object] = rec["message"]["content"][0]  # type: ignore[index]
+        block.update(content=out, is_error=is_error)
+    path.write_bytes(jsonl(recs))
+    full = claude.parse(path)
+    slim = cache.load(path, cache_dir, slim=True)
+    assert [did_not_run(e) for e in slim.events] == [did_not_run(e) for e in full.events]
+    assert any(did_not_run(e) for e in slim.events)
+    store = cache.cache_file(path, cache_dir, slim=True).read_bytes()
+    assert b"big output" not in store and denied.encode() in store
+    assert len(store) < 4000
+    assert not cache.cache_file(path, cache_dir).exists()  # the full cache is separate
 
 
 def test_an_unwritable_cache_still_gives_the_full_result(tmp_path: Path) -> None:

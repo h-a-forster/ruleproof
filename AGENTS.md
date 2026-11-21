@@ -62,6 +62,6 @@ Known limitations (stated in the README):
 - All benchmark grading is by ruleproof or a Claude judge; no human labels. One small repo,
   5 tasks: with tasks as the unit no arm difference is significant (exact sign-flip test).
 - Gemini CLI parsing is untested on real sessions.
-- Hooks: the transcript budget does not bound saving the cache or running the rules; the first
-  PreToolUse call on a 1 GB session with no cache took 10.7 s, over a 10 s timeout
-  (`docs/claude-code-hook.md`, Long sessions).
+- Hooks: the transcript budget does not bound saving the cache or running the rules; under
+  heavy disk load a first PreToolUse call on 1 GB with no cache once took 10.7 s, over a 10 s
+  timeout (`docs/claude-code-hook.md`, Long sessions).
