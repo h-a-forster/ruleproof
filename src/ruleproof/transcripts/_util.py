@@ -59,10 +59,10 @@ def iter_records(path: Path, warnings: list[str]) -> Generator[dict[str, Any], N
     """
     with open_text(path) as fh:
         first = fh.readline()
-        while first and not first.strip(BOM).strip():
+        while first and is_blank(first):
             first = fh.readline()
-        start = first.lstrip(BOM).lstrip()
-        if start.startswith("[") or (start.startswith("{") and not _json_line(start)):
+        if maybe_whole_file_json(first):
+            start = first.lstrip(BOM).lstrip()
             try:
                 whole = json.loads(start + fh.read())
             except json.JSONDecodeError:
@@ -76,18 +76,36 @@ def iter_records(path: Path, warnings: list[str]) -> Generator[dict[str, Any], N
                 return
         fh.seek(0)
         for lineno, line in enumerate(fh, 1):
-            line = line.strip().lstrip(BOM)
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError as exc:
-                warn(warnings, f"line {lineno}: invalid JSON ({exc.msg})")
-                continue
-            if isinstance(rec, dict):
+            rec = parse_line(line, lineno, warnings)
+            if rec is not None:
                 yield rec
-            else:
-                warn(warnings, f"line {lineno}: expected a JSON object")
+
+
+def parse_line(line: str, lineno: int, warnings: list[str]) -> dict[str, Any] | None:
+    """The record on one JSONL line; None for a blank line or, with a warning, a bad one."""
+    line = line.strip().lstrip(BOM)
+    if not line:
+        return None
+    try:
+        rec = json.loads(line)
+    except json.JSONDecodeError as exc:
+        warn(warnings, f"line {lineno}: invalid JSON ({exc.msg})")
+        return None
+    if isinstance(rec, dict):
+        return rec
+    warn(warnings, f"line {lineno}: expected a JSON object")
+    return None
+
+
+def is_blank(line: str) -> bool:
+    return not line.strip(BOM).strip()
+
+
+def maybe_whole_file_json(first: str) -> bool:
+    """True when a file whose first non-blank line is ``first`` may hold one JSON array or
+    object instead of JSONL."""
+    start = first.lstrip(BOM).lstrip()
+    return start.startswith("[") or (start.startswith("{") and not _json_line(start))
 
 
 def _json_line(text: str) -> bool:

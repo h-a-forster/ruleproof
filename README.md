@@ -45,10 +45,11 @@ runs `pip install` and hand-edits generated code.
 
 From the [benchmarks](#results) (small n, one repo, a Claude judge; read them as indications):
 
-- **Blocking hooks closed the gap.** With `PreToolUse` and `Stop` hooks, Haiku 4.5 on the long
-  handbook passed every rule in 15/15 runs, against 5/15 without them. The Stop hook sent 6 runs
-  back to fix a missing changelog entry or an unverified claim, and all 6 were fixed. The rows are
-  graded by the same rules that steered the agent ([Results](#results)).
+- **With blocking hooks, Haiku 4.5 passed every rule in 15/15 runs, against 5/15 without.**
+  That is on the long handbook, 3 repeats of 5 tasks, graded by the same rules that steered the
+  agent; with tasks as the unit it is not significant (with 5 tasks the smallest possible p is
+  0.0625). The Stop hook sent 6 runs back to fix a missing changelog entry or an unverified
+  claim, and all 6 were fixed. For Haiku 5.5 the hooks moved 11/15 to 12/15 ([Results](#results)).
 - **Handbook length may matter; the benchmark is too small to show it.** The same rules in a
   12k-token handbook instead of a 55-line AGENTS.md dropped Haiku 4.5 from 12/15 to 5/15 clean
   runs. The 15 runs are 3 repeats of 5 tasks; with tasks as the unit (per-task differences 0, 3,
@@ -186,7 +187,11 @@ Two Claude Code hooks:
 }
 ```
 
-Details: [docs/claude-code-hook.md](docs/claude-code-hook.md).
+Details: [docs/claude-code-hook.md](docs/claude-code-hook.md). On long sessions the hooks read
+the transcript incrementally and within a time budget, and refuse what they could not check in
+time rather than let it through. One known gap: the first PreToolUse call on a 1 GB session with
+no cache took 10.7 s, over the 10 s timeout the docs suggest, so Claude Code would let
+that call through ([Long sessions](docs/claude-code-hook.md#long-sessions)).
 
 ## CI
 

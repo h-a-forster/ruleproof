@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, TextIO, cast
 
 from ruleproof import __version__
 from ruleproof.errors import ConfigError, RuleproofError
+from ruleproof.hook import PRETOOL_BUDGET, STOP_BUDGET
 from ruleproof.report import FORMATS, PROJECT_URL
 
 if TYPE_CHECKING:
@@ -164,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     h.add_argument("--rules", metavar="FILE", help="rules file, relative to the hook payload's cwd")
     h.add_argument("--base", metavar="REF", default="HEAD", help="compare with REF (HEAD)")
+    _add_transcript_budget(h, STOP_BUDGET)
     h.set_defaults(handler=cmd_hook_claude_stop)
     h = hook_sub.add_parser(
         "claude-pretool",
@@ -180,8 +182,30 @@ def build_parser() -> argparse.ArgumentParser:
         default="HEAD",
         help="files absent at REF count as new, so editing them is an add (default: HEAD)",
     )
+    _add_transcript_budget(h, PRETOOL_BUDGET)
     h.set_defaults(handler=cmd_hook_claude_pretool)
     return parser
+
+
+def _add_transcript_budget(h: argparse.ArgumentParser, default: float) -> None:
+    h.add_argument(
+        "--transcript-budget",
+        metavar="SECONDS",
+        type=_seconds,
+        default=default,
+        help="seconds the transcript read may take before the hook refuses what it could not "
+        f"judge; keep it below the hook's timeout; 0 for no limit (default: {default:g})",
+    )
+
+
+def _seconds(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        value = -1.0
+    if not 0 <= value < float("inf"):
+        raise argparse.ArgumentTypeError(f"expected a number of seconds, 0 or more: {text!r}")
+    return value
 
 
 def _add_output_args(p: argparse.ArgumentParser) -> None:
@@ -390,13 +414,27 @@ def cmd_checks(args: argparse.Namespace) -> int:
 def cmd_hook_claude_stop(args: argparse.Namespace) -> int:
     from ruleproof.hook import claude_stop
 
-    return claude_stop(sys.stdin, sys.stdout, sys.stderr, rules_file=args.rules, base=args.base)
+    return claude_stop(
+        sys.stdin,
+        sys.stdout,
+        sys.stderr,
+        rules_file=args.rules,
+        base=args.base,
+        budget=args.transcript_budget,
+    )
 
 
 def cmd_hook_claude_pretool(args: argparse.Namespace) -> int:
     from ruleproof.hook import claude_pretool
 
-    return claude_pretool(sys.stdin, sys.stdout, sys.stderr, rules_file=args.rules, base=args.base)
+    return claude_pretool(
+        sys.stdin,
+        sys.stdout,
+        sys.stderr,
+        rules_file=args.rules,
+        base=args.base,
+        budget=args.transcript_budget,
+    )
 
 
 # --------------------------------------------------------------------------- inputs

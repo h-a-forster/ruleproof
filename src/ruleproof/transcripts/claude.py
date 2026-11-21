@@ -12,6 +12,7 @@ command output, system reminders) is not a user event.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,7 +64,7 @@ class _State:
     actor: str
     events: list[Event] = field(default_factory=list)
     pending: dict[str, _Pending] = field(default_factory=dict)
-    seen_text: set[tuple[str, str]] = field(default_factory=set)
+    seen_text: set[str] = field(default_factory=set)  # `_text_key` of texts already added
     recognised: int = 0
     got_id: bool = False
 
@@ -89,25 +90,42 @@ def _parse_stream(path: Path, session: Session, actor: str, primary: bool = True
     st = _State(session=session, actor=actor)
     warnings: list[str] = []
     for rec in iter_records(path, warnings):
-        if not isinstance(rec.get("type"), str):
-            continue
-        if rec["type"] in _CLAUDE_TYPES or rec.get("sessionId"):
-            st.recognised += 1
-        try:
-            if primary:
-                _session_info(st, rec)
-            if rec["type"] == "assistant":
-                _assistant(st, rec)
-            elif rec["type"] == "user":
-                _user(st, rec)
-            elif rec["type"] == "attachment":
-                _attachment(st, rec)
-        except RECORD_ERRORS as exc:
-            warn(warnings, f"skipped a malformed {rec['type']} record ({type(exc).__name__})")
+        feed(st, rec, warnings, primary)
+    add_warnings(session, path, warnings, primary)
+    return st
+
+
+def feed(st: _State, rec: dict[str, Any], warnings: list[str], primary: bool = True) -> None:
+    """Apply one record to the parse state. The full read and the incremental read of
+    ``transcripts.cache`` both go through here, so they cannot drift apart."""
+    if not isinstance(rec.get("type"), str):
+        return
+    if rec["type"] in _CLAUDE_TYPES or rec.get("sessionId"):
+        st.recognised += 1
+    try:
+        if primary:
+            _session_info(st, rec)
+        if rec["type"] == "assistant":
+            _assistant(st, rec)
+        elif rec["type"] == "user":
+            _user(st, rec)
+        elif rec["type"] == "attachment":
+            _attachment(st, rec)
+    except RECORD_ERRORS as exc:
+        warn(warnings, f"skipped a malformed {rec['type']} record ({type(exc).__name__})")
+
+
+def add_warnings(session: Session, path: Path, warnings: list[str], primary: bool) -> None:
+    """Move one stream's parse warnings to the session, naming a subagent's file."""
     prefix = "" if primary else f"{path.name}: "
     for w in warnings:
         warn(session.warnings, prefix + w)
-    return st
+
+
+def _text_key(msg_id: str, text: str) -> str:
+    """A short key for one message's text block, so the seen set stays small on long sessions."""
+    digest = hashlib.blake2b(text.encode("utf-8", "surrogatepass"), digest_size=16)
+    return f"{msg_id}:{digest.hexdigest()}"
 
 
 def _session_info(st: _State, rec: dict[str, Any]) -> None:
@@ -155,10 +173,14 @@ def _assistant(st: _State, rec: dict[str, Any]) -> None:
         btype = block.get("type")
         if btype == "text":
             text = str(block.get("text") or "").strip()
-            key = (msg_id, text)
-            if text and (not msg_id or key not in st.seen_text):
+            if not text:
+                continue
+            if msg_id:  # the same block re-emitted by a streaming writer
+                key = _text_key(msg_id, text)
+                if key in st.seen_text:
+                    continue
                 st.seen_text.add(key)
-                st.events.append(Event(0, EventKind.ASSISTANT, text, ts, actor=actor))
+            st.events.append(Event(0, EventKind.ASSISTANT, text, ts, actor=actor))
         elif btype == "tool_use":
             tool_id = str(block.get("id") or "")
             if tool_id and tool_id in st.pending:

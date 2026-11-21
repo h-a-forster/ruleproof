@@ -602,10 +602,11 @@ def test_hook_command_wires_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("ruleproof.hook.claude_stop", claude_stop)
     monkeypatch.setattr("sys.stdin", io.StringIO('{"x": 1}'))
     assert cli.main(["hook", "claude-stop"]) == 0
-    assert seen == {"stdin": '{"x": 1}', "rules_file": None, "base": "HEAD"}
+    assert seen == {"stdin": '{"x": 1}', "rules_file": None, "base": "HEAD", "budget": 40}
     monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
-    assert cli.main(["hook", "claude-stop", "--rules", "../r.toml", "--base", "main"]) == 0
-    assert seen["rules_file"] == "../r.toml" and seen["base"] == "main"
+    argv = ["--rules", "../r.toml", "--base", "main", "--transcript-budget", "0"]
+    assert cli.main(["hook", "claude-stop", *argv]) == 0
+    assert seen["rules_file"] == "../r.toml" and seen["base"] == "main" and seen["budget"] == 0
 
 
 def test_hook_pretool_command_wires_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -619,10 +620,12 @@ def test_hook_pretool_command_wires_stdio(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr("ruleproof.hook.claude_pretool", claude_pretool)
     monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
     assert cli.main(["hook", "claude-pretool", "--rules", "r.toml"]) == 0
-    assert seen == {"stdin": "{}", "rules_file": "r.toml", "base": "HEAD"}
+    assert seen == {"stdin": "{}", "rules_file": "r.toml", "base": "HEAD", "budget": 5}
     monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
     assert cli.main(["hook", "claude-pretool", "--base", "origin/main"]) == 0
     assert seen["base"] == "origin/main"
+    for bad in ("-1", "soon", "inf", "nan"):
+        assert cli.main(["hook", "claude-pretool", "--transcript-budget", bad]) == 2
 
 
 def test_hook_without_name_prints_help(capsys: pytest.CaptureFixture[str]) -> None:

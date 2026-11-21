@@ -74,7 +74,7 @@ class Harness:
 
         _patch(monkeypatch, "ruleproof.diff", from_git=from_git)
         _patch(monkeypatch, "ruleproof.rules", load_rules=load_rules)
-        _patch(monkeypatch, "ruleproof.transcripts", load_session=lambda *a, **k: self.load())
+        _patch(monkeypatch, "ruleproof.transcripts.cache", load=lambda *a, **k: self.load())
         _patch(monkeypatch, "ruleproof.engine", run_rules=run_rules)
 
     def repo_root(self, path: Path) -> Path:
@@ -103,6 +103,15 @@ def payload(**kw: Any) -> dict[str, Any]:
     }
     base.update(kw)
     return base
+
+
+@pytest.fixture(autouse=True)
+def _cache_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep transcript caches out of the user's cache directory, here and in subprocesses."""
+    from ruleproof.transcripts import cache
+
+    monkeypatch.setenv(cache.CACHE_DIR_ENV, str(tmp_path / "hook-cache"))
+    monkeypatch.setattr(cache, "default_cache_dir", lambda env=None: tmp_path / "hook-cache")
 
 
 @pytest.fixture
@@ -705,3 +714,92 @@ def test_hook_reads_payload_as_utf8_in_any_locale(tmp_path: Path) -> None:
     )
     assert proc.stdout, proc.stderr.decode("utf-8", "replace")
     assert json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# --------------------------------------------------------------------------- time budget
+
+
+def _transcript(path: Path, *texts: str, filler: int = 30) -> None:
+    """A transcript with ``filler`` unrelated tool calls, then the user messages ``texts``."""
+    recs: list[dict[str, Any]] = []
+    for i in range(filler):
+        call = {"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {"command": "ls"}}
+        recs.append({"type": "assistant", "sessionId": "s1", "message": {"content": [call]}})
+    recs += [{"type": "user", "sessionId": "s1", "message": {"content": t}} for t in texts]
+    path.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+
+
+def _out_of_time(tmp_path: Path) -> hook.Reading:
+    """A reading whose deadline passes after the first chunk; the clock is a counter."""
+    from itertools import count
+
+    ticks = count()
+    return hook.Reading(tmp_path / "budget-cache", deadline=0.0, clock=lambda: float(next(ticks)))
+
+
+def test_pretool_refuses_what_it_could_not_read_in_time(
+    pre_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ruleproof.transcripts import cache
+
+    monkeypatch.setattr(cache, "_CHUNK", 256)
+    (pre_repo / "ruleproof.toml").write_text(
+        'version = 1\n[[rule]]\nid = "push-when-asked"\ncheck = "forbid-command"\n'
+        "command = 'git push'\nunless_user = 'push it'\n",
+        encoding="utf-8",
+    )
+    _transcript(pre_repo / "t.jsonl", "now push it")  # the user did ask
+    data = {
+        "transcript_path": str(pre_repo / "t.jsonl"),
+        "cwd": str(pre_repo),
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "git push"},
+    }
+    err = io.StringIO()
+    reason = hook.evaluate_pretool(data, err, reading=_out_of_time(tmp_path))
+    assert reason is not None and "push-when-asked" in reason
+    # Calls that need no history are not slowed down or refused.
+    assert hook.evaluate_pretool({**data, "tool_input": {"command": "ls"}}, err) is None
+    # Out of time on a call no rule matches: allowed, and stderr does not claim a refusal.
+    quiet = io.StringIO()
+    ls = {**data, "tool_input": {"command": "ls"}}
+    assert hook.evaluate_pretool(ls, quiet, reading=_out_of_time(tmp_path / "other")) is None
+    assert "refused" not in quiet.getvalue()
+    # Each retry reads on from the saved offset, until the user's request is seen.
+    for _ in range(100):
+        if hook.evaluate_pretool(data, io.StringIO(), reading=_out_of_time(tmp_path)) is None:
+            break
+    else:
+        pytest.fail("the read never caught up")
+
+
+def test_stop_names_the_rules_it_could_not_check_in_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _real_modules_or_skip()
+    from ruleproof.transcripts import cache
+
+    monkeypatch.setattr(cache, "_CHUNK", 256)
+    (tmp_path / "repo").mkdir()
+    repo = make_git_repo(
+        tmp_path / "repo",
+        'version = 1\n[[rule]]\nid = "tests-pass"\ncheck = "require-command"\n'
+        "command = 'pytest'\n"
+        '[[rule]]\nid = "minor"\nseverity = "warning"\ncheck = "require-command"\n'
+        "command = 'ruff'\n",
+    )
+    _transcript(tmp_path / "t.jsonl", "fix it")
+    data = {
+        "transcript_path": str(tmp_path / "t.jsonl"),
+        "cwd": str(repo),
+        "hook_event_name": "Stop",
+        "stop_hook_active": False,
+    }
+    err = io.StringIO()
+    reason = hook.evaluate(data, err, reading=_out_of_time(tmp_path))
+    assert reason is not None
+    assert "1 rule was not checked: tests-pass" in reason
+    assert "minor" not in reason
+    assert "tests-pass" in err.getvalue()
+    assert hook.evaluate(data, io.StringIO(), reading=hook.Reading()) is None  # no limit: passes

@@ -43,7 +43,7 @@ are the checks; `ruleproof.toml` holds the rest.
 
 ## Status
 
-Updated: 2026-11-13. Open work lives in `backlog.md`.
+Updated: 2026-11-21.
 
 Done:
 - 0.1.0 and 0.1.1 released (GitHub only, installed from the git tag). 0.1.1 collects the
@@ -62,3 +62,6 @@ Known limitations (stated in the README):
 - All benchmark grading is by ruleproof or a Claude judge; no human labels. One small repo,
   5 tasks: with tasks as the unit no arm difference is significant (exact sign-flip test).
 - Gemini CLI parsing is untested on real sessions.
+- Hooks: the transcript budget does not bound saving the cache or running the rules; the first
+  PreToolUse call on a 1 GB session with no cache took 10.7 s, over a 10 s timeout
+  (`docs/claude-code-hook.md`, Long sessions).

@@ -12,7 +12,8 @@ ruleproof has two Claude Code hooks. Use either or both:
 
 Both always exit 0, never call the network, and stay out of the way when they cannot run: no
 rules, an unreadable payload or an internal error gives a one-line diagnostic on stderr and no
-decision.
+decision. The exception is a transcript too long to read in time: then rules that need it are
+not waved through ([Long sessions](#long-sessions)).
 
 ## Setup
 
@@ -90,10 +91,8 @@ Claude Code runs PreToolUse hooks after Claude proposes a tool call and before i
    or `forbid-change` against that event (no git diff, so it is fast). A `forbid-command` or
    `forbid-tool` rule with `unless_user` or `unless_after` also reads the transcript
    (`transcript_path`), since its verdict depends on earlier user messages or commands; only the
-   proposed call can fail it. That read costs time in proportion to the transcript's size, about
-   15 s per GB (2.8 s for a 200 MB synthetic transcript on a laptop), on every call. Claude Code
-   lets the call through when the hook times out, so with such rules raise the PreToolUse
-   `timeout` above 10 (60 covers sessions of a few GB);
+   proposed call can fail it. The transcript is read incrementally and within a time budget;
+   see [Long sessions](#long-sessions);
 4. if one fails, prints
 
    ```json
@@ -117,6 +116,7 @@ command writes. The Stop hook and `ruleproof check` still see those through the 
 | --- | --- | --- |
 | `--rules FILE` | discovery | Rules file to use. A relative path resolves against the payload's `cwd`. The file may live outside the repo. |
 | `--base REF` | `HEAD` | Files absent at this ref count as new. Checked with one `git cat-file` call, only for an edit of an existing file when a `forbid-change` rule is active; if git cannot answer, the on-disk check stands. |
+| `--transcript-budget SECONDS` | `5` | Time the transcript read may take; see [Long sessions](#long-sessions). `0`: no limit. |
 
 ## Stop: `claude-stop`
 
@@ -140,6 +140,7 @@ rules.
 | --- | --- | --- |
 | `--rules FILE` | discovery | Rules file to use. A relative path resolves against the payload's `cwd`. The file may live outside the repo. |
 | `--base REF` | `HEAD` | Git ref the working tree is compared with. |
+| `--transcript-budget SECONDS` | `40` | Time the transcript read may take; see [Long sessions](#long-sessions). `0`: no limit. |
 
 ```json
 "command": "ruleproof hook claude-stop --rules ~/.config/ruleproof/personal.toml --base origin/main"
@@ -161,6 +162,71 @@ left for you, CI, or the next `ruleproof check`.
 - Exit codes come from the transcript. Claude Code records failed shell commands as errors, so
   `require-command` and `claims` can tell a failing test run from a passing one.
 - The hook reads the local transcript file and runs git. It makes no network calls.
+
+## Long sessions
+
+Claude Code lets a call through when its hook times out. A hook that re-read a long transcript
+on every call would therefore stop enforcing its rules, without a word, in exactly the long
+sessions where rules are most often broken. Two things prevent that.
+
+**Incremental reads.** The hooks keep, per transcript, the parse state up to the last complete
+line in the user cache directory (`%LOCALAPPDATA%\ruleproof\transcripts` on Windows,
+`~/Library/Caches/ruleproof/transcripts` on macOS, `$XDG_CACHE_HOME/ruleproof/transcripts` or
+`~/.cache/ruleproof/transcripts` elsewhere; with `RULEPROOF_CACHE_DIR` set, its `transcripts`
+subfolder). A call parses only what was appended since the last one. The result is the same as
+a full read: a half-written last line is read again next time, and a transcript that shrank or
+whose bytes changed (a rewrite) is read again from the start, as is one whose cache is missing,
+corrupt, from another ruleproof version or cannot be written. The cache holds what the
+transcript holds (messages, commands, truncated output), never goes into the repo, and entries
+untouched for 30 days are removed (only files ruleproof wrote are ever deleted).
+`RULEPROOF_HOOK_CACHE=0` turns it off: every call reads the whole transcript.
+
+**A time budget that fails closed.** If the transcript still cannot be read in time (the first
+call in a session that is already long, or after a ruleproof upgrade), the read stops at the
+budget, saves its progress so the next call continues from there, and the hook says so on
+stderr. It does not wave the rules through:
+
+- PreToolUse denies a call that only a `unless_user` / `unless_after` rule could allow, and
+  tells Claude the transcript was not read in time and to make the call again. Calls that need
+  no history are judged as usual.
+- Stop blocks once, naming the error rules it could not check and telling Claude not to report
+  the work as checked against them. Loop protection still applies, so Claude is not trapped.
+
+The defaults (5 s PreToolUse, 40 s Stop) are about half and two thirds of the timeouts in the
+setup above, leaving room for starting Python, the diff and the rules. If you raise a hook's
+`timeout`, raise `--transcript-budget` with it; `--transcript-budget 0` removes the limit and
+restores the old behaviour of reading to the end however long it takes. Failing closed is the
+default because the alternative is the silent failure this section is about; a denied call or an
+extra Stop turn is visible and recovers on the next call.
+
+**Measured** with `scripts/bench_hook_transcript.py` (synthetic transcripts with large tool
+results; one `ruleproof hook` process per call, rules `forbid-command` with `unless_user`,
+`require-command` and `claims`) on a Windows desktop shared with other jobs, so single numbers
+vary by 2x or more. "Before" is 201f26b, which read the whole transcript on every call; "after"
+uses the default budgets, starting with no cache:
+
+| Transcript | Hook | Before: every call | After: first call | After: next call | After: call after an append |
+| --- | --- | --- | --- | --- | --- |
+| 200 MB | PreToolUse | 0.9 to 2.4 s | 0.8 s | 0.3 s | 0.3 s |
+| 200 MB | Stop | 1.6 s (one 15 s outlier) | 1.0 s | 0.9 s | 1.2 s |
+| 1 GB | PreToolUse | 16 s | 10.7 s | 0.7 s | 1.0 s |
+| 1 GB | Stop | not timed; a full parse alone took 16 to 70 s | 28 s | 1.2 s | 1.3 s |
+
+The cache is about 50 MB per GB of transcript (9.6 MB for 200 MB, 51 MB for 1 GB).
+
+Limits:
+
+- The budget bounds loading the cache and reading the transcript, not starting Python, saving
+  the cache or running the rules. The first call on a 1 GB session with no cache took 10.7 s,
+  just over PreToolUse's 10 s timeout, so that one call would have been let through. In an
+  earlier run on the same machine under heavier load, first calls took 9 to 59 s. From the
+  second call on, calls stayed near 1 s. On sessions of a GB or more, set the PreToolUse
+  `timeout` to 30 and keep the budget at 5.
+- Each call still loads the whole cache and, when lines were appended, rewrites it, so the
+  per-call cost grows with the session, at about a twentieth of a full read's rate.
+- The first calls in a session that is already long (or after a ruleproof upgrade, which
+  starts a new cache) refuse history-dependent calls until the read catches up, about one
+  budget's worth of transcript per call.
 
 ## Disable them
 

@@ -14,13 +14,21 @@ Both read the hook payload as JSON on stdin and always exit 0.
 
 The hooks must never get in the way: any internal problem (no rules, a broken transcript, a
 bug) exits 0 without a decision and with a one-line diagnostic on stderr.
+
+One problem is not waved through: a transcript too long to read in time. Claude Code lets the
+call through when a hook times out, so a rule would stop being enforced without a word. The
+transcript is therefore read incrementally (``transcripts.cache``: only the bytes appended
+since the last call) and within a time budget; when the budget runs out, the hook says so on
+stderr and refuses what it could not judge (see ``Reading``).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
 
@@ -29,8 +37,18 @@ from ruleproof.report import evidence_line, one_line, split_source
 
 if TYPE_CHECKING:
     from ruleproof.models import Rule
+    from ruleproof.transcripts.cache import BudgetExceeded
 
 DISABLE_ENV = "RULEPROOF_HOOK_DISABLE"
+CACHE_ENV = "RULEPROOF_HOOK_CACHE"
+"""Set to ``0`` to read the whole transcript on every call and store nothing."""
+
+PRETOOL_BUDGET = 5.0
+STOP_BUDGET = 40.0
+"""Default seconds a hook may spend reading the transcript: half of the documented PreToolUse
+timeout (10 s) and two thirds of the Stop timeout (60 s), which leaves the rest for starting
+Python, the diff and the rules. 0 means no limit."""
+
 PRETOOL_CHECKS = frozenset({"forbid-command", "forbid-edit", "forbid-tool", "forbid-change"})
 """Checks that can judge a single proposed tool call."""
 
@@ -50,6 +68,24 @@ _MAX_REASON = 3000
 
 class _Skip(Exception):
     """The hook has nothing to do; the message explains why."""
+
+
+@dataclass(frozen=True, slots=True)
+class Reading:
+    """How a hook call reads the transcript: the cache directory (None: full read, nothing
+    stored) and the ``clock()`` value by which the read must be done (None: no limit)."""
+
+    cache_dir: Path | None = None
+    deadline: float | None = None
+    clock: Callable[[], float] = time.monotonic
+
+
+def _reading(env: Mapping[str, str] | None, budget: float) -> Reading:
+    from ruleproof.transcripts.cache import default_cache_dir
+
+    env = os.environ if env is None else env
+    cache_dir = None if env.get(CACHE_ENV) == "0" else default_cache_dir(env)
+    return Reading(cache_dir, time.monotonic() + budget if budget > 0 else None)
 
 
 Evaluator = Callable[[Mapping[str, Any], TextIO], "str | None"]
@@ -130,15 +166,18 @@ def claude_stop(
     *,
     rules_file: str | None = None,
     base: str = "HEAD",
+    budget: float = STOP_BUDGET,
 ) -> int:
     """Entry point for ``ruleproof hook claude-stop``. Always returns 0.
 
     ``rules_file`` may live outside the repo; a relative path resolves against the payload's
-    ``cwd``. ``base`` is the git ref the working tree is compared with.
+    ``cwd``. ``base`` is the git ref the working tree is compared with. ``budget`` is the
+    seconds the transcript read may take (0: no limit).
     """
+    reading = _reading(env, budget)
 
     def fn(payload: Mapping[str, Any], err: TextIO) -> str | None:
-        return evaluate(payload, err, rules_file=rules_file, base=base)
+        return evaluate(payload, err, rules_file=rules_file, base=base, reading=reading)
 
     reason = _run(stdin, stderr, env, fn)
     if reason:
@@ -152,9 +191,15 @@ def evaluate(
     *,
     rules_file: str | None = None,
     base: str = "HEAD",
+    reading: Reading | None = None,
 ) -> str | None:
-    """Run the check for a Stop payload; return the block reason, or None to let it stop."""
+    """Run the check for a Stop payload; return the block reason, or None to let it stop.
+
+    When the transcript cannot be read within ``reading``'s deadline, the rules that need it
+    are not waved through: the reason names them as unchecked.
+    """
     from ruleproof import __version__
+    from ruleproof.checks import REGISTRY
     from ruleproof.diff import from_git
     from ruleproof.engine import run_rules
     from ruleproof.errors import RuleproofError
@@ -180,17 +225,60 @@ def evaluate(
         except RuleproofError as exc:
             print(f"ruleproof hook: diff unavailable, diff rules skipped: {exc}", file=stderr)
 
-    session = _load_transcript(payload, stderr)
+    from ruleproof.transcripts.cache import BudgetExceeded
+
+    unread: BudgetExceeded | None = None
+    try:
+        session = _load_transcript(payload, stderr, reading)
+    except BudgetExceeded as exc:
+        session, unread = None, exc
     results = run_rules(rules, Context(repo=repo, diff=diff, session=session))
     report = Report(kind="check", tool_version=__version__, repo=str(repo), results=results)
     failed = report.failed(at_least="error", strict=False)
-    return block_reason(failed) if failed else None
+    reason = block_reason(failed) if failed else None
+    if unread is None:
+        return reason
+    unchecked = [
+        r.rule.id
+        for r in results
+        if r.status == "skip"
+        and r.rule.severity == "error"
+        and (spec := REGISTRY.get(r.rule.check)) is not None
+        and "session" in spec.needs
+    ]
+    print(f"ruleproof hook: {_unread_notice(unread, unchecked)}", file=stderr)
+    if not unchecked:
+        return reason
+    notice = (
+        f"ruleproof: {_unread_notice(unread, unchecked)}. Do not report the work as checked "
+        "against them. Tell the user they were not verified; `ruleproof check --session "
+        "latest` checks them without a time limit."
+    )
+    return _bounded(f"{reason}\n{notice}" if reason else notice)
 
 
-def _load_transcript(payload: Mapping[str, Any], stderr: TextIO) -> Session | None:
+def _unread_notice(unread: BudgetExceeded, unchecked: list[str]) -> str:
+    """One line on a transcript read that ran out of time, naming the rules left unchecked."""
+    if not unchecked:
+        return f"transcript not read in time; no error rule needed it ({unread})"
+    noun = "rule was" if len(unchecked) == 1 else "rules were"
+    ids = ", ".join(unchecked[:_MAX_RULES]) + (", ..." if len(unchecked) > _MAX_RULES else "")
+    return f"transcript not read in time, so {len(unchecked)} {noun} not checked: {ids} ({unread})"
+
+
+def _load_transcript(
+    payload: Mapping[str, Any], stderr: TextIO, reading: Reading | None = None
+) -> Session | None:
+    """The session so far, or None when there is no readable transcript.
+
+    Raises ``BudgetExceeded`` when the read ran past ``reading.deadline``: the caller decides
+    what that means for its rules.
+    """
     from ruleproof.errors import RuleproofError
-    from ruleproof.transcripts import load_session
+    from ruleproof.transcripts import cache
+    from ruleproof.transcripts.cache import BudgetExceeded
 
+    reading = reading or Reading()
     path = payload.get("transcript_path")
     if not isinstance(path, str) or not path:
         print(
@@ -198,7 +286,14 @@ def _load_transcript(payload: Mapping[str, Any], stderr: TextIO) -> Session | No
         )
         return None
     try:
-        session = load_session(Path(os.path.expanduser(path)), agent="claude-code")
+        session = cache.load(
+            Path(os.path.expanduser(path)),
+            reading.cache_dir,
+            deadline=reading.deadline,
+            clock=reading.clock,
+        )
+    except BudgetExceeded:
+        raise
     except RuleproofError as exc:
         print(f"ruleproof hook: transcript rules skipped: {exc}", file=stderr)
         return None
@@ -265,16 +360,19 @@ def claude_pretool(
     *,
     rules_file: str | None = None,
     base: str = "HEAD",
+    budget: float = PRETOOL_BUDGET,
 ) -> int:
     """Entry point for ``ruleproof hook claude-pretool``. Always returns 0.
 
     Denies the proposed tool call when an error-severity forbid-command, forbid-edit,
     forbid-tool or forbid-change rule fails on it; otherwise prints nothing. ``base`` decides
     whether an edit adds or modifies a file: a file absent at ``base`` counts as added.
+    ``budget`` is the seconds the transcript read may take (0: no limit).
     """
+    reading = _reading(env, budget)
 
     def fn(payload: Mapping[str, Any], err: TextIO) -> str | None:
-        return evaluate_pretool(payload, err, rules_file=rules_file, base=base)
+        return evaluate_pretool(payload, err, rules_file=rules_file, base=base, reading=reading)
 
     reason = _run(stdin, stderr, env, fn)
     if reason:
@@ -295,6 +393,7 @@ def evaluate_pretool(
     *,
     rules_file: str | None = None,
     base: str = "HEAD",
+    reading: Reading | None = None,
 ) -> str | None:
     """Judge a PreToolUse payload; return the deny reason, or None to stay out of the way."""
     from ruleproof.engine import run_rules
@@ -317,10 +416,12 @@ def evaluate_pretool(
     with_history = [r for r in rules if _needs_history(r)]
     alone = [r for r in rules if not _needs_history(r)]
     results = run_rules(alone, Context(repo=repo, diff=None, session=session))
+    unread = None
     if with_history:
-        results += _judge_with_history(with_history, session, payload, repo, stderr)
+        judged, unread = _judge_with_history(with_history, session, payload, repo, stderr, reading)
+        results += judged
     failed = [r for r in results if r.status == "fail"]
-    return deny_reason(failed) if failed else None
+    return deny_reason(failed, unread) if failed else None
 
 
 def _needs_history(rule: Rule) -> bool:
@@ -331,18 +432,29 @@ def _needs_history(rule: Rule) -> bool:
 
 
 def _judge_with_history(
-    rules: list[Rule], proposed: Session, payload: Mapping[str, Any], repo: Path, stderr: TextIO
-) -> list[RuleResult]:
+    rules: list[Rule],
+    proposed: Session,
+    payload: Mapping[str, Any],
+    repo: Path,
+    stderr: TextIO,
+    reading: Reading | None,
+) -> tuple[list[RuleResult], BudgetExceeded | None]:
     """Run ``rules`` on the transcript so far plus the proposed call; only the call can fail.
 
     Without a readable transcript there is no earlier user message or command, so a rule
-    that waits for one denies the call.
+    that waits for one denies the call. The same holds when the read ran out of time, which
+    is returned with the denials so the reason can say so.
     """
     from ruleproof.checks._common import quoted
     from ruleproof.engine import run_rules
     from ruleproof.models import Context
+    from ruleproof.transcripts.cache import BudgetExceeded
 
-    history = _load_transcript(payload, stderr)
+    unread: BudgetExceeded | None = None
+    try:
+        history = _load_transcript(payload, stderr, reading)
+    except BudgetExceeded as exc:
+        history, unread = None, exc
     session = history if history is not None else proposed
     if history is not None:
         session.events = [*history.events, proposed.events[0]]
@@ -363,7 +475,13 @@ def _judge_with_history(
                 else f"called {call.tool} once"
             )
             out.append(result)
-    return out
+    if unread is not None and out:
+        print(
+            "ruleproof hook: transcript not read in time, so the call was refused: no earlier "
+            f"message or command could allow it ({unread})",
+            file=stderr,
+        )
+    return out, unread if out else None
 
 
 def _nearest_git_root(cwd: Path) -> Path:
@@ -450,8 +568,9 @@ def proposed_call_session(payload: Mapping[str, Any], cwd: str) -> Session:
     )
 
 
-def deny_reason(failed: list[RuleResult]) -> str:
-    """Why the call was refused, addressed to the agent."""
+def deny_reason(failed: list[RuleResult], unread: BudgetExceeded | None = None) -> str:
+    """Why the call was refused, addressed to the agent. ``unread``: the transcript read ran
+    out of time, so a rule that waits for an earlier message or command could not see one."""
     n = len(failed)
     noun = "rule" if n == 1 else "rules"
     lines = [f"ruleproof: this tool call would break {n} project {noun}, so it was not run:"]
@@ -460,6 +579,17 @@ def deny_reason(failed: list[RuleResult]) -> str:
         lines += _rule_details(r)
     if n > _MAX_RULES:
         lines.append(f"... and {n - _MAX_RULES} more.")
+    if unread is not None:
+        again = (
+            "Make the same call again: the read continues where it stopped."
+            if unread.saved
+            else "Tell the user: a retry will not help (the transcript cache cannot be "
+            "written, or loading it alone takes longer than the budget)."
+        )
+        lines.append(
+            "ruleproof could not finish reading the session transcript in time, so it could "
+            f"not see whether an earlier message or command allows this call ({unread}). {again}"
+        )
     lines.append(
         "Follow the rule instead (its text may say what to do). If the task cannot be done "
         "without breaking it, stop and ask the user; do not work around the rule."
